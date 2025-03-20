@@ -37,6 +37,13 @@ class SpeedTest {
         case combinedParallel
     }
     
+    private var currentTask: URLSessionDataTask?
+    
+    func cancelCurrentTest() {
+        currentTask?.cancel()
+        currentTask = nil
+    }
+    
     func startTest(
         size: TestSize,
         type: TestType,
@@ -132,7 +139,7 @@ class SpeedTest {
             let bytesTransferred = type == .download ? data.count : size.byteCount
             completion(bytesTransferred, duration)
         }
-        
+        currentTask = task
         task.resume()
     }
 }

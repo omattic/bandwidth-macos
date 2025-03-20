@@ -1,19 +1,67 @@
 import AppKit
 import Foundation
 
+// First define PingMonitor class before using it
+class PingMonitor {
+    private var timer: Timer?
+    private var currentLatency: Double = 0
+    private let host = "1.1.1.1" // Cloudflare DNS for reliable ping
+    
+    func start() {
+        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.measureLatency()
+        }
+        timer?.fire()
+    }
+    
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+    
+    func getCurrentLatency() -> Double {
+        return currentLatency
+    }
+    
+    private func measureLatency() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/sbin/ping")
+        process.arguments = ["-c", "1", "-W", "1", host]
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        
+        try? process.run()
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        if let output = String(data: data, encoding: .utf8) {
+            if let timeStr = output.components(separatedBy: "time=").last?.components(separatedBy: " ").first,
+               let time = Double(timeStr) {
+                currentLatency = time
+            }
+        }
+        
+        process.waitUntilExit()
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var speedMonitor: SpeedMonitor!
     private var speedTest: SpeedTest!
+    private var pingMonitor: PingMonitor!
     private var timer: Timer?
     private var showMaxSpeed = false
     private var isTestingSpeed = false
     private var progressIndicator: NSProgressIndicator!
+    private var cancelTest: (() -> Void)?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Create the speed monitor
+        // Create the monitors
         speedMonitor = SpeedMonitor()
         speedTest = SpeedTest()
+        pingMonitor = PingMonitor()
+        pingMonitor.start()
         
         // Create the status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -48,6 +96,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Create the menu
         let menu = NSMenu()
+        
+        // Mode switching and control items
+        let liveMenuItem = NSMenuItem(title: "Show Live", action: #selector(toggleMode), keyEquivalent: "l")
+        let maxMenuItem = NSMenuItem(title: "Show Max", action: #selector(toggleMode), keyEquivalent: "m")
+        let resetMaxMenuItem = NSMenuItem(title: "Reset Max", action: #selector(resetMaxSpeed), keyEquivalent: "r")
+        let cancelTestMenuItem = NSMenuItem(title: "Cancel Test", action: #selector(cancelCurrentTest), keyEquivalent: "c")
+        cancelTestMenuItem.isHidden = true
+        
+        menu.addItem(liveMenuItem)
+        menu.addItem(maxMenuItem)
+        menu.addItem(resetMaxMenuItem)
+        menu.addItem(cancelTestMenuItem)
+        menu.addItem(NSMenuItem.separator())
+        
+        // Quick Test item
+        let quickTestItem = NSMenuItem(title: "Quick Test", action: #selector(startQuickTest), keyEquivalent: "q")
+        menu.addItem(quickTestItem)
+        menu.addItem(NSMenuItem.separator())
         
         // Add Speed Test submenu
         let speedTestMenu = NSMenu()
@@ -89,23 +155,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         speedTestMenu.addItem(combinedItem)
         
-        let modeMenuItem = NSMenuItem(
-            title: "Show Max",
-            action: #selector(toggleMode),
-            keyEquivalent: "m"
-        )
-        let resetMaxMenuItem = NSMenuItem(
-            title: "Reset Max",
-            action: #selector(resetMaxSpeed),
-            keyEquivalent: "r"
-        )
-        menu.addItem(modeMenuItem)
-        menu.addItem(resetMaxMenuItem)
-        menu.addItem(NSMenuItem.separator())
         menu.addItem(speedTestItem)
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "Q"))
         statusItem.menu = menu
+        
+        // Update initial menu state
+        maxMenuItem.isHidden = true  // Start in live mode
+        updateMenuItemsEnabled(isTestRunning: false)
         
         // Start the timer to update speed every second
         timer = Timer.scheduledTimer(timeInterval: 2.0, target: self, selector: #selector(updateSpeed), userInfo: nil, repeats: true)
@@ -113,12 +170,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        pingMonitor.stop()
     }
     
     @objc private func toggleMode() {
         showMaxSpeed.toggle()
-        if let menuItem = statusItem.menu?.items.first {
-            menuItem.title = showMaxSpeed ? "Show Live Speed" : "Show Max Speed"
+        if let modeMenuItem = statusItem.menu?.items.first(where: { $0.keyEquivalent == "m" }) {
+            modeMenuItem.title = showMaxSpeed ? "Show Live" : "Show Max"
         }
     }
     
@@ -142,10 +200,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     
                     let text = NSMutableAttributedString()
                     
+                    // Always show current mode
+                    let modeLabel = self.showMaxSpeed ? "[max] " : "[live] "
+                    text.append(NSAttributedString(string: modeLabel, attributes: attrs))
+                    
                     if !self.isTestingSpeed {
                         if self.showMaxSpeed {
                             text.append(NSAttributedString(string: "max:", attributes: attrs))
                         }
+                    }
+                    
+                    // Add latency if available
+                    let latency = self.pingMonitor.getCurrentLatency()
+                    if latency > 0 {
+                        text.append(NSAttributedString(string: String(format: "%3.0fms ", latency), attributes: attrs))
                     }
                     
                     text.append(NSAttributedString(
@@ -163,6 +231,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+    
+    @objc private func startQuickTest() {
+        startSpeedTest(size: .medium, type: .combinedSerial)
     }
     
     @objc private func startDownloadTest_small() { startSpeedTest(size: SpeedTest.TestSize.small, type: SpeedTest.TestType.download) }
@@ -185,6 +257,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isTestingSpeed else { return }
         isTestingSpeed = true
         
+        // Update menu state
+        updateMenuItemsEnabled(isTestRunning: true)
+        
         // Show and start progress indicator
         progressIndicator.isHidden = false
         progressIndicator.startAnimation(nil)
@@ -192,8 +267,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Switch to max speed mode
         if !showMaxSpeed {
             showMaxSpeed = true
-            if let menuItem = statusItem.menu?.items.first {
-                menuItem.title = "Show Live Speed"
+            if let modeMenuItem = statusItem.menu?.items.first(where: { $0.keyEquivalent == "m" }) {
+                modeMenuItem.title = "Show Live"
             }
         }
         
@@ -213,9 +288,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         speedTest.startTest(size: size, type: type) { progress in
             // Update progress if needed
-        } completion: { result in
+        } completion: { [weak self] result in
+            guard let self = self else { return }
             DispatchQueue.main.async {
                 self.isTestingSpeed = false
+                self.cancelTest = nil
+                self.updateMenuItemsEnabled(isTestRunning: false)
+                
                 // Hide and stop progress indicator
                 self.progressIndicator.stopAnimation(nil)
                 self.progressIndicator.isHidden = true
@@ -238,6 +317,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        
+        // Store cancel handler
+        cancelTest = { [weak self] in
+            self?.speedTest.cancelCurrentTest()
+            self?.isTestingSpeed = false
+            self?.updateMenuItemsEnabled(isTestRunning: false)
+        }
+    }
+    
+    private func updateMenuItemsEnabled(isTestRunning: Bool) {
+        guard let menu = statusItem.menu else { return }
+        
+        // Find our control items
+        let liveItem = menu.items.first { $0.keyEquivalent == "l" }
+        let maxItem = menu.items.first { $0.keyEquivalent == "m" }
+        let resetItem = menu.items.first { $0.keyEquivalent == "r" }
+        let cancelItem = menu.items.first { $0.keyEquivalent == "c" }
+        
+        // Update visibility based on mode
+        liveItem?.isHidden = !showMaxSpeed
+        maxItem?.isHidden = showMaxSpeed
+        
+        // Update enabled state based on test status
+        let testItems = menu.items.filter { $0.action == #selector(startQuickTest) || $0.submenu != nil }
+        testItems.forEach { $0.isEnabled = !isTestRunning }
+        
+        // Show/hide cancel button
+        cancelItem?.isHidden = !isTestRunning
+        
+        // Reset button is enabled only in max mode and when not testing
+        resetItem?.isEnabled = showMaxSpeed && !isTestRunning
+    }
+    
+    @objc private func cancelCurrentTest() {
+        cancelTest?()
     }
 }
 
