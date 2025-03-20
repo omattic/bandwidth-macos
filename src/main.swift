@@ -22,7 +22,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
             ]
             
-            let initialText = NSMutableAttributedString(string: "   0.0", attributes: attrs)
+            let initialText = NSMutableAttributedString()
+            initialText.append(NSAttributedString(string: "   0.0", attributes: attrs))
             initialText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
             initialText.append(NSAttributedString(string: "   0.0", attributes: attrs))
             initialText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
@@ -81,10 +82,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
                     ]
                     
-                    let text = NSMutableAttributedString(
+                    let text = NSMutableAttributedString()
+                    
+                    if self.showMaxSpeed {
+                        text.append(NSAttributedString(string: "max:", attributes: attrs))
+                    }
+                    
+                    text.append(NSAttributedString(
                         string: String(format: "%6.1f", down),
                         attributes: attrs
-                    )
+                    ))
                     text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
                     text.append(NSAttributedString(
                         string: String(format: "%6.1f", up),
