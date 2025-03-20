@@ -45,35 +45,55 @@ class SpeedTest {
     ) {
         switch type {
         case .download, .upload:
-            singleTest(size: size, type: type) { speed in
+            singleTest(size: size, type: type) { bytes, duration in
+                guard let bytes = bytes, let duration = duration else {
+                    completion((download: nil, upload: nil))
+                    return
+                }
+                let speed = (Double(bytes) * 8.0) / (1_000_000.0 * duration)
                 completion((download: type == .download ? speed : nil,
                           upload: type == .upload ? speed : nil))
             }
         case .combinedSerial:
-            singleTest(size: size, type: .download) { downloadSpeed in
-                self.singleTest(size: size, type: .upload) { uploadSpeed in
+            singleTest(size: size, type: .download) { bytes, duration in
+                guard let downloadBytes = bytes, let downloadDuration = duration else {
+                    completion((download: nil, upload: nil))
+                    return
+                }
+                let downloadSpeed = (Double(downloadBytes) * 8.0) / (1_000_000.0 * downloadDuration)
+                
+                self.singleTest(size: size, type: .upload) { uploadBytes, uploadDuration in
+                    guard let uploadBytes = uploadBytes, let uploadDuration = uploadDuration else {
+                        completion((download: downloadSpeed, upload: nil))
+                        return
+                    }
+                    let uploadSpeed = (Double(uploadBytes) * 8.0) / (1_000_000.0 * uploadDuration)
                     completion((download: downloadSpeed, upload: uploadSpeed))
                 }
             }
         case .combinedParallel:
-            var downloadResult: Double?
-            var uploadResult: Double?
+            let startTime = Date()
+            var downloadBytes: Int?
+            var uploadBytes: Int?
             let group = DispatchGroup()
             
             group.enter()
-            singleTest(size: size, type: .download) { speed in
-                downloadResult = speed
+            singleTest(size: size, type: .download, startTime: startTime) { bytes, _ in
+                downloadBytes = bytes
                 group.leave()
             }
             
             group.enter()
-            singleTest(size: size, type: .upload) { speed in
-                uploadResult = speed
+            singleTest(size: size, type: .upload, startTime: startTime) { bytes, _ in
+                uploadBytes = bytes
                 group.leave()
             }
             
             group.notify(queue: .main) {
-                completion((download: downloadResult, upload: uploadResult))
+                let duration = Date().timeIntervalSince(startTime)
+                let downloadSpeed = downloadBytes.map { Double($0) * 8.0 / (1_000_000.0 * duration) }
+                let uploadSpeed = uploadBytes.map { Double($0) * 8.0 / (1_000_000.0 * duration) }
+                completion((download: downloadSpeed, upload: uploadSpeed))
             }
         }
     }
@@ -81,9 +101,10 @@ class SpeedTest {
     private func singleTest(
         size: TestSize,
         type: TestType,
-        completion: @escaping (Double?) -> Void
+        startTime: Date? = nil,
+        completion: @escaping (_ bytes: Int?, _ duration: TimeInterval?) -> Void
     ) {
-        let startTime = Date()
+        let testStartTime = startTime ?? Date()
         let url = type == .download ? size.url : URL(string: "https://speed.cloudflare.com/__up")!
         
         var request = URLRequest(url: url)
@@ -103,16 +124,13 @@ class SpeedTest {
                   let data = data else {
                 print("Error: \(error?.localizedDescription ?? "Unknown error")")
                 print("Status code: \(String(describing: (response as? HTTPURLResponse)?.statusCode))")
-                completion(nil)
+                completion(nil, nil)
                 return
             }
             
-            let duration = Date().timeIntervalSince(startTime)
+            let duration = Date().timeIntervalSince(testStartTime)
             let bytesTransferred = type == .download ? data.count : size.byteCount
-            
-            // Convert to Mbps (megabits per second)
-            let speedMbps = (Double(bytesTransferred) * 8.0) / (1_000_000.0 * duration)
-            completion(speedMbps)
+            completion(bytesTransferred, duration)
         }
         
         task.resume()
