@@ -6,6 +6,7 @@ mkdir -p build
 # Compile the Swift files into a macOS application
 swiftc -o build/NetworkSpeedMonitor \
     src/SpeedMonitor.swift \
+    src/SpeedTest.swift \
     src/main.swift \
     -framework AppKit # \
     # -enable-hardened-runtime
