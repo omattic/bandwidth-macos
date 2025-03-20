@@ -6,13 +6,19 @@ class SpeedTest {
         case medium   // 100MB
         case large    // 1GB
         
-        var url: URL {
-            let base = "https://speed.cloudflare.com/__down"
+        var byteCount: Int {
             switch self {
-            case .small:  return URL(string: "\(base)?bytes=10000000")!
-            case .medium: return URL(string: "\(base)?bytes=100000000")!
-            case .large:  return URL(string: "\(base)?bytes=1000000000")!
+            case .small: return 10_000_000    // 10 MB
+            case .medium: return 100_000_000  // 100 MB
+            case .large: return 1_000_000_000 // 1 GB
             }
+        }
+        
+        var url: URL {
+            // Use Cloudflare's speed test endpoint with specific byte size
+            let base = "https://speed.cloudflare.com/__down"
+            let urlString = "\(base)?bytes=\(byteCount)"
+            return URL(string: urlString)!
         }
         
         var description: String {
@@ -24,26 +30,51 @@ class SpeedTest {
         }
     }
     
-    func startTest(size: TestSize, progress: @escaping (Double) -> Void, completion: @escaping (Double?) -> Void) {
+    enum TestType {
+        case download
+        case upload
+    }
+    
+    func startTest(
+        size: TestSize,
+        type: TestType,
+        progress: @escaping (Double) -> Void,
+        completion: @escaping (Double?) -> Void
+    ) {
         let startTime = Date()
-        var totalBytes: Int64 = 0
         
-        let task = URLSession.shared.dataTask(with: size.url) { _, response, error in
+        // Use the predefined URL for downloads, or custom URL for uploads
+        let url = type == .download ? size.url : URL(string: "https://speed.cloudflare.com/__up")!
+        
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpMethod = type == .download ? "GET" : "POST"
+        
+        if type == .upload {
+            let dummyData = Data(repeating: 0, count: size.byteCount)
+            request.httpBody = dummyData
+        }
+        
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard error == nil,
-                  let response = response as? HTTPURLResponse,
-                  response.statusCode == 200 else {
+                  let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200,
+                  let data = data else {
+                print("Error: \(error?.localizedDescription ?? "Unknown error")")
+                print("Status code: \(String(describing: (response as? HTTPURLResponse)?.statusCode))")
                 completion(nil)
                 return
             }
             
-            let endTime = Date()
-            let duration = endTime.timeIntervalSince(startTime)
-            let bytesPerSecond = Double(totalBytes) / duration
-            let speedMbps = (bytesPerSecond * 8) / 1_000_000 // Convert to Mbps
+            let duration = Date().timeIntervalSince(startTime)
+            let bytesTransferred = type == .download ? data.count : size.byteCount
+            
+            // Convert to Mbps (megabits per second)
+            let speedMbps = (Double(bytesTransferred) * 8.0) / (1_000_000.0 * duration)
             completion(speedMbps)
         }
         
-        // Configure the task to report progress
         task.resume()
     }
 }

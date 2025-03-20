@@ -42,9 +42,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let speedTestItem = NSMenuItem(title: "Speed Test", action: nil, keyEquivalent: "")
         speedTestItem.submenu = speedTestMenu
         
-        speedTestMenu.addItem(NSMenuItem(title: "Test (10 MB)", action: #selector(startSpeedTest_small), keyEquivalent: "1"))
-        speedTestMenu.addItem(NSMenuItem(title: "Test (100 MB)", action: #selector(startSpeedTest_medium), keyEquivalent: "2"))
-        speedTestMenu.addItem(NSMenuItem(title: "Test (1 GB)", action: #selector(startSpeedTest_large), keyEquivalent: "3"))
+        // Download tests
+        let downloadMenu = NSMenu()
+        let downloadItem = NSMenuItem(title: "Download Test", action: nil, keyEquivalent: "")
+        downloadItem.submenu = downloadMenu
+        downloadMenu.addItem(NSMenuItem(title: "Test (10 MB)", action: #selector(startDownloadTest_small), keyEquivalent: "1"))
+        downloadMenu.addItem(NSMenuItem(title: "Test (100 MB)", action: #selector(startDownloadTest_medium), keyEquivalent: "2"))
+        downloadMenu.addItem(NSMenuItem(title: "Test (1 GB)", action: #selector(startDownloadTest_large), keyEquivalent: "3"))
+        
+        // Upload tests
+        let uploadMenu = NSMenu()
+        let uploadItem = NSMenuItem(title: "Upload Test", action: nil, keyEquivalent: "")
+        uploadItem.submenu = uploadMenu
+        uploadMenu.addItem(NSMenuItem(title: "Test (10 MB)", action: #selector(startUploadTest_small), keyEquivalent: "4"))
+        uploadMenu.addItem(NSMenuItem(title: "Test (100 MB)", action: #selector(startUploadTest_medium), keyEquivalent: "5"))
+        uploadMenu.addItem(NSMenuItem(title: "Test (1 GB)", action: #selector(startUploadTest_large), keyEquivalent: "6"))
+        
+        speedTestMenu.addItem(downloadItem)
+        speedTestMenu.addItem(uploadItem)
         
         let modeMenuItem = NSMenuItem(
             title: "Show Max Speed",
@@ -120,11 +135,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    @objc private func startSpeedTest_small() { startSpeedTest(size: .small) }
-    @objc private func startSpeedTest_medium() { startSpeedTest(size: .medium) }
-    @objc private func startSpeedTest_large() { startSpeedTest(size: .large) }
+    @objc private func startDownloadTest_small() { startSpeedTest(size: SpeedTest.TestSize.small, type: SpeedTest.TestType.download) }
+    @objc private func startDownloadTest_medium() { startSpeedTest(size: SpeedTest.TestSize.medium, type: SpeedTest.TestType.download) }
+    @objc private func startDownloadTest_large() { startSpeedTest(size: SpeedTest.TestSize.large, type: SpeedTest.TestType.download) }
     
-    private func startSpeedTest(size: SpeedTest.TestSize) {
+    @objc private func startUploadTest_small() { startSpeedTest(size: SpeedTest.TestSize.small, type: SpeedTest.TestType.upload) }
+    @objc private func startUploadTest_medium() { startSpeedTest(size: SpeedTest.TestSize.medium, type: SpeedTest.TestType.upload) }
+    @objc private func startUploadTest_large() { startSpeedTest(size: SpeedTest.TestSize.large, type: SpeedTest.TestType.upload) }
+    
+    private func startSpeedTest(size: SpeedTest.TestSize, type: SpeedTest.TestType) {
         guard !isTestingSpeed else { return }
         isTestingSpeed = true
         
@@ -140,12 +159,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             ]
-            button.attributedTitle = NSAttributedString(string: "Testing...", attributes: attrs)
+            button.attributedTitle = NSAttributedString(string: type == .download ? "Testing ↓..." : "Testing ↑...", attributes: attrs)
         }
         
-        speedTest.startTest(size: size) { progress in
+        speedTest.startTest(size: size, type: type, progress: { progress in
             // Update progress if needed
-        } completion: { speed in
+        }, completion: { speed in
             DispatchQueue.main.async {
                 self.isTestingSpeed = false
                 if let speed = speed {
@@ -154,7 +173,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     print("Test failed")
                 }
             }
-        }
+        })
     }
 }
 
