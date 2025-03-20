@@ -14,8 +14,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = statusItem.button {
-            button.title = "   0.0↓   0.0↑"
-            button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            ]
+            let boldAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+            ]
+            
+            let initialText = NSMutableAttributedString(string: "   0.0", attributes: attrs)
+            initialText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+            initialText.append(NSAttributedString(string: "   0.0", attributes: attrs))
+            initialText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+            
+            button.attributedTitle = initialText
         }
         
         // Create the menu
@@ -34,10 +45,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func updateSpeed() {
         speedMonitor.measureSpeed { downloadSpeed, uploadSpeed in
             DispatchQueue.main.async {
-                // Already in Mbps, just format with one decimal place
-                let formattedText = String(format: "%5.1f↓ %5.1f↑", downloadSpeed, uploadSpeed)
                 if let button = self.statusItem.button {
-                    button.title = formattedText
+                    let attrs: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+                    ]
+                    let boldAttrs: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+                    ]
+                    
+                    let text = NSMutableAttributedString(
+                        string: String(format: "%6.1f", downloadSpeed),
+                        attributes: attrs
+                    )
+                    text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+                    text.append(NSAttributedString(
+                        string: String(format: "%6.1f", uploadSpeed),
+                        attributes: attrs
+                    ))
+                    text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+                    
+                    button.attributedTitle = text
                 }
             }
         }
