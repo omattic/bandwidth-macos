@@ -7,16 +7,23 @@ mkdir -p build
 swiftc -o build/NetworkSpeedMonitor \
     src/SpeedMonitor.swift \
     src/main.swift \
-    -framework AppKit
+    -framework AppKit # \
+    # -enable-hardened-runtime
 
-# Check if compilation was successful
+# Sign the application with entitlements
+# codesign --force --sign - \
+#     --entitlements NetworkSpeedMonitor.entitlements \
+#     --options runtime \
+#     build/NetworkSpeedMonitor
+
+# Check if compilation and signing were successful
 if [ $? -eq 0 ]; then
-    echo "Compilation successful!"
+    echo "Compilation and signing successful!"
     echo "Running application..."
     
     # Run the application
     ./build/NetworkSpeedMonitor
 else
-    echo "Compilation failed. Check for errors."
+    echo "Compilation or signing failed. Check for errors."
     exit 1
 fi

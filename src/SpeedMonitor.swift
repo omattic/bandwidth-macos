@@ -21,11 +21,12 @@ class SpeedMonitor {
             let timeInterval = currentTime.timeIntervalSince(lastTime)
             print("Time interval since last measurement: \(timeInterval) seconds")
             
-            // Calculate bytes per second
-            let downloadSpeed = Double(bytesIn - previousTotalBytesReceived) / timeInterval / 1024 // KB/s
-            let uploadSpeed = Double(bytesOut - previousTotalBytesSent) / timeInterval / 1024 // KB/s
+            // Calculate megabits per second (Mbps)
+            // Convert bytes to bits (*8) then to Mbps (/1024/1024)
+            let downloadSpeed = (Double(bytesIn - previousTotalBytesReceived) * 8.0) / timeInterval / 1024.0 / 1024.0
+            let uploadSpeed = (Double(bytesOut - previousTotalBytesSent) * 8.0) / timeInterval / 1024.0 / 1024.0
             
-            print("Calculated speeds - Download: \(downloadSpeed) KB/s, Upload: \(uploadSpeed) KB/s")
+            print("Calculated speeds - Download: \(downloadSpeed) Mbps, Upload: \(uploadSpeed) Mbps")
             completion(downloadSpeed, uploadSpeed)
         } else {
             // First measurement, no speed calculation possible yet

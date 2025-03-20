@@ -14,7 +14,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = statusItem.button {
-            button.title = "↑000↓000"
+            button.title = "  0↓  0↑"
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         }
         
         // Create the menu
@@ -33,10 +34,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func updateSpeed() {
         speedMonitor.measureSpeed { downloadSpeed, uploadSpeed in
             DispatchQueue.main.async {
-                let downloadSpeedFormatted = String(format: "%.1f", downloadSpeed)
-                let uploadSpeedFormatted = String(format: "%.1f", uploadSpeed)
+                // Already in Mbps, just format with one decimal place
+                let formattedText = String(format: "%4.1f↓%4.1f↑", downloadSpeed, uploadSpeed)
                 if let button = self.statusItem.button {
-                    button.title = "↑\(uploadSpeedFormatted) ↓\(downloadSpeedFormatted) KB/s"
+                    button.title = formattedText
                 }
             }
         }
