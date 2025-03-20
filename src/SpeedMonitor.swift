@@ -4,8 +4,15 @@ class SpeedMonitor {
     private var previousTotalBytesReceived: UInt64 = 0
     private var previousTotalBytesSent: UInt64 = 0
     private var lastMeasurementTime: Date?
+    private var maxDownloadSpeed: Double = 0
+    private var maxUploadSpeed: Double = 0
     
-    func measureSpeed(completion: @escaping (Double, Double) -> Void) {
+    func resetMaxSpeeds() {
+        maxDownloadSpeed = 0
+        maxUploadSpeed = 0
+    }
+    
+    func measureSpeed(completion: @escaping (Double, Double, Double, Double) -> Void) {
         print("Measuring network speed...")
         
         // Get network statistics
@@ -26,12 +33,15 @@ class SpeedMonitor {
             let downloadSpeed = (Double(bytesIn - previousTotalBytesReceived) * 8.0) / timeInterval / 1024.0 / 1024.0
             let uploadSpeed = (Double(bytesOut - previousTotalBytesSent) * 8.0) / timeInterval / 1024.0 / 1024.0
             
+            maxDownloadSpeed = max(maxDownloadSpeed, downloadSpeed)
+            maxUploadSpeed = max(maxUploadSpeed, uploadSpeed)
+            
             print("Calculated speeds - Download: \(downloadSpeed) Mbps, Upload: \(uploadSpeed) Mbps")
-            completion(downloadSpeed, uploadSpeed)
+            completion(downloadSpeed, uploadSpeed, maxDownloadSpeed, maxUploadSpeed)
         } else {
             // First measurement, no speed calculation possible yet
             print("First measurement, no speed calculation yet")
-            completion(0, 0)
+            completion(0, 0, 0, 0)
         }
         
         // Store values for next calculation

@@ -5,6 +5,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var speedMonitor: SpeedMonitor!
     private var timer: Timer?
+    private var showMaxSpeed = false
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the speed monitor
@@ -31,6 +32,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Create the menu
         let menu = NSMenu()
+        let modeMenuItem = NSMenuItem(
+            title: "Show Max Speed",
+            action: #selector(toggleMode),
+            keyEquivalent: "m"
+        )
+        let resetMaxMenuItem = NSMenuItem(
+            title: "Reset Max Speed",
+            action: #selector(resetMaxSpeed),
+            keyEquivalent: "r"
+        )
+        menu.addItem(modeMenuItem)
+        menu.addItem(resetMaxMenuItem)
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
         
@@ -42,10 +56,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         timer?.invalidate()
     }
     
+    @objc private func toggleMode() {
+        showMaxSpeed.toggle()
+        if let menuItem = statusItem.menu?.items.first {
+            menuItem.title = showMaxSpeed ? "Show Live Speed" : "Show Max Speed"
+        }
+    }
+    
+    @objc private func resetMaxSpeed() {
+        speedMonitor.resetMaxSpeeds()
+    }
+    
     @objc private func updateSpeed() {
-        speedMonitor.measureSpeed { downloadSpeed, uploadSpeed in
+        speedMonitor.measureSpeed { currentDown, currentUp, maxDown, maxUp in
             DispatchQueue.main.async {
                 if let button = self.statusItem.button {
+                    let down = self.showMaxSpeed ? maxDown : currentDown
+                    let up = self.showMaxSpeed ? maxUp : currentUp
+                    
                     let attrs: [NSAttributedString.Key: Any] = [
                         .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
                     ]
@@ -54,12 +82,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     ]
                     
                     let text = NSMutableAttributedString(
-                        string: String(format: "%6.1f", downloadSpeed),
+                        string: String(format: "%6.1f", down),
                         attributes: attrs
                     )
                     text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
                     text.append(NSAttributedString(
-                        string: String(format: "%6.1f", uploadSpeed),
+                        string: String(format: "%6.1f", up),
                         attributes: attrs
                     ))
                     text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
