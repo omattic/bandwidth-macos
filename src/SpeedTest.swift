@@ -33,17 +33,57 @@ class SpeedTest {
     enum TestType {
         case download
         case upload
+        case combinedSerial
+        case combinedParallel
     }
     
     func startTest(
         size: TestSize,
         type: TestType,
         progress: @escaping (Double) -> Void,
+        completion: @escaping ((download: Double?, upload: Double?)) -> Void
+    ) {
+        switch type {
+        case .download, .upload:
+            singleTest(size: size, type: type) { speed in
+                completion((download: type == .download ? speed : nil,
+                          upload: type == .upload ? speed : nil))
+            }
+        case .combinedSerial:
+            singleTest(size: size, type: .download) { downloadSpeed in
+                self.singleTest(size: size, type: .upload) { uploadSpeed in
+                    completion((download: downloadSpeed, upload: uploadSpeed))
+                }
+            }
+        case .combinedParallel:
+            var downloadResult: Double?
+            var uploadResult: Double?
+            let group = DispatchGroup()
+            
+            group.enter()
+            singleTest(size: size, type: .download) { speed in
+                downloadResult = speed
+                group.leave()
+            }
+            
+            group.enter()
+            singleTest(size: size, type: .upload) { speed in
+                uploadResult = speed
+                group.leave()
+            }
+            
+            group.notify(queue: .main) {
+                completion((download: downloadResult, upload: uploadResult))
+            }
+        }
+    }
+    
+    private func singleTest(
+        size: TestSize,
+        type: TestType,
         completion: @escaping (Double?) -> Void
     ) {
         let startTime = Date()
-        
-        // Use the predefined URL for downloads, or custom URL for uploads
         let url = type == .download ? size.url : URL(string: "https://speed.cloudflare.com/__up")!
         
         var request = URLRequest(url: url)
@@ -56,7 +96,7 @@ class SpeedTest {
             request.httpBody = dummyData
         }
         
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
             guard error == nil,
                   let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200,

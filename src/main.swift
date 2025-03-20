@@ -60,6 +60,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         speedTestMenu.addItem(downloadItem)
         speedTestMenu.addItem(uploadItem)
+        speedTestMenu.addItem(NSMenuItem.separator())
+        
+        // Combined tests
+        let combinedMenu = NSMenu()
+        let combinedItem = NSMenuItem(title: "Combined Test", action: nil, keyEquivalent: "")
+        combinedItem.submenu = combinedMenu
+        
+        combinedMenu.addItem(NSMenuItem(title: "Serial Test (10 MB)", action: #selector(startCombinedSerialTest_small), keyEquivalent: "7"))
+        combinedMenu.addItem(NSMenuItem(title: "Serial Test (100 MB)", action: #selector(startCombinedSerialTest_medium), keyEquivalent: "8"))
+        combinedMenu.addItem(NSMenuItem(title: "Serial Test (1 GB)", action: #selector(startCombinedSerialTest_large), keyEquivalent: "9"))
+        combinedMenu.addItem(NSMenuItem.separator())
+        combinedMenu.addItem(NSMenuItem(title: "Parallel Test (10 MB)", action: #selector(startCombinedParallelTest_small), keyEquivalent: ""))
+        combinedMenu.addItem(NSMenuItem(title: "Parallel Test (100 MB)", action: #selector(startCombinedParallelTest_medium), keyEquivalent: ""))
+        combinedMenu.addItem(NSMenuItem(title: "Parallel Test (1 GB)", action: #selector(startCombinedParallelTest_large), keyEquivalent: ""))
+        
+        speedTestMenu.addItem(combinedItem)
         
         let modeMenuItem = NSMenuItem(
             title: "Show Max Speed",
@@ -143,6 +159,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func startUploadTest_medium() { startSpeedTest(size: SpeedTest.TestSize.medium, type: SpeedTest.TestType.upload) }
     @objc private func startUploadTest_large() { startSpeedTest(size: SpeedTest.TestSize.large, type: SpeedTest.TestType.upload) }
     
+    @objc private func startCombinedSerialTest_small() { startSpeedTest(size: .small, type: .combinedSerial) }
+    @objc private func startCombinedSerialTest_medium() { startSpeedTest(size: .medium, type: .combinedSerial) }
+    @objc private func startCombinedSerialTest_large() { startSpeedTest(size: .large, type: .combinedSerial) }
+    
+    @objc private func startCombinedParallelTest_small() { startSpeedTest(size: .small, type: .combinedParallel) }
+    @objc private func startCombinedParallelTest_medium() { startSpeedTest(size: .medium, type: .combinedParallel) }
+    @objc private func startCombinedParallelTest_large() { startSpeedTest(size: .large, type: .combinedParallel) }
+    
     private func startSpeedTest(size: SpeedTest.TestSize, type: SpeedTest.TestType) {
         guard !isTestingSpeed else { return }
         isTestingSpeed = true
@@ -159,21 +183,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             ]
-            button.attributedTitle = NSAttributedString(string: type == .download ? "Testing ↓..." : "Testing ↑...", attributes: attrs)
+            let testingText = switch type {
+            case .download: "Testing ↓..."
+            case .upload: "Testing ↑..."
+            case .combinedSerial: "Testing ↓↑..."
+            case .combinedParallel: "Testing ⇅..."
+            }
+            button.attributedTitle = NSAttributedString(string: testingText, attributes: attrs)
         }
         
-        speedTest.startTest(size: size, type: type, progress: { progress in
+        speedTest.startTest(size: size, type: type) { progress in
             // Update progress if needed
-        }, completion: { speed in
+        } completion: { result in
             DispatchQueue.main.async {
                 self.isTestingSpeed = false
-                if let speed = speed {
-                    print("Test completed: \(speed) Mbps")
-                } else {
-                    print("Test failed")
+                switch type {
+                case .download, .upload:
+                    if let speed = result.download ?? result.upload {
+                        print("Test completed: \(speed) Mbps")
+                    } else {
+                        print("Test failed")
+                    }
+                case .combinedSerial, .combinedParallel:
+                    print("Download: \(result.download ?? -1) Mbps")
+                    print("Upload: \(result.upload ?? -1) Mbps")
                 }
             }
-        })
+        }
     }
 }
 
