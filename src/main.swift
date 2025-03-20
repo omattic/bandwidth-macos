@@ -97,28 +97,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Create the menu
         let menu = NSMenu()
         
-        // Mode switching and control items
-        let liveMenuItem = NSMenuItem(title: "Show Live", action: #selector(toggleMode), keyEquivalent: "l")
-        let maxMenuItem = NSMenuItem(title: "Show Max", action: #selector(toggleMode), keyEquivalent: "m")
+        // Mode switching group
+        let modeGroup = NSMenu()
+        let modeItem = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
+        modeItem.submenu = modeGroup
+        
+        let liveMenuItem = NSMenuItem(title: "Live Speed", action: #selector(setLiveMode), keyEquivalent: "l")
+        let maxMenuItem = NSMenuItem(title: "Show Max Speed", action: #selector(setMaxMode), keyEquivalent: "m")
         let resetMaxMenuItem = NSMenuItem(title: "Reset Max", action: #selector(resetMaxSpeed), keyEquivalent: "r")
-        let cancelTestMenuItem = NSMenuItem(title: "Cancel Test", action: #selector(cancelCurrentTest), keyEquivalent: "c")
-        cancelTestMenuItem.isHidden = true
+        modeGroup.addItem(liveMenuItem)
+        modeGroup.addItem(maxMenuItem)
+        modeGroup.addItem(resetMaxMenuItem)
         
-        menu.addItem(liveMenuItem)
-        menu.addItem(maxMenuItem)
-        menu.addItem(resetMaxMenuItem)
-        menu.addItem(cancelTestMenuItem)
+        menu.addItem(modeItem)
         menu.addItem(NSMenuItem.separator())
         
-        // Quick Test item
-        let quickTestItem = NSMenuItem(title: "Quick Test", action: #selector(startQuickTest), keyEquivalent: "q")
-        menu.addItem(quickTestItem)
-        menu.addItem(NSMenuItem.separator())
-        
-        // Add Speed Test submenu
+        // Speed Test group
         let speedTestMenu = NSMenu()
         let speedTestItem = NSMenuItem(title: "Speed Test", action: nil, keyEquivalent: "")
         speedTestItem.submenu = speedTestMenu
+        
+        // Quick test at the top
+        speedTestMenu.addItem(NSMenuItem(title: "Quick Test", action: #selector(startQuickTest), keyEquivalent: "t"))
+        speedTestMenu.addItem(NSMenuItem.separator())
         
         // Download tests
         let downloadMenu = NSMenu()
@@ -157,12 +158,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         menu.addItem(speedTestItem)
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "Q"))
+        
+        // Cancel test item (hidden by default)
+        let cancelTestMenuItem = NSMenuItem(title: "Cancel Test", action: #selector(cancelCurrentTest), keyEquivalent: "c")
+        cancelTestMenuItem.isHidden = true
+        menu.addItem(cancelTestMenuItem)
+        
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        
         statusItem.menu = menu
         
-        // Update initial menu state
-        maxMenuItem.isHidden = true  // Start in live mode
-        updateMenuItemsEnabled(isTestRunning: false)
+        // Set initial state
+        updateMenuState()
         
         // Start the timer to update speed every second
         timer = Timer.scheduledTimer(timeInterval: 2.0, target: self, selector: #selector(updateSpeed), userInfo: nil, repeats: true)
@@ -175,9 +182,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func toggleMode() {
         showMaxSpeed.toggle()
-        if let modeMenuItem = statusItem.menu?.items.first(where: { $0.keyEquivalent == "m" }) {
-            modeMenuItem.title = showMaxSpeed ? "Show Live" : "Show Max"
-        }
+        
+        guard let menu = statusItem.menu else { return }
+        let liveItem = menu.items.first { $0.keyEquivalent == "l" }
+        let maxItem = menu.items.first { $0.keyEquivalent == "m" }
+        let resetItem = menu.items.first { $0.keyEquivalent == "r" }
+        
+        // Toggle visibility
+        liveItem?.isHidden = !showMaxSpeed
+        maxItem?.isHidden = showMaxSpeed
+        resetItem?.isHidden = !showMaxSpeed
+        
+        // Update display immediately
+        updateSpeed()
     }
     
     @objc private func resetMaxSpeed() {
@@ -256,9 +273,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func startSpeedTest(size: SpeedTest.TestSize, type: SpeedTest.TestType) {
         guard !isTestingSpeed else { return }
         isTestingSpeed = true
+        showMaxSpeed = true
         
-        // Update menu state
-        updateMenuItemsEnabled(isTestRunning: true)
+        updateMenuState()
         
         // Show and start progress indicator
         progressIndicator.isHidden = false
@@ -293,17 +310,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 self.isTestingSpeed = false
                 self.cancelTest = nil
-                self.updateMenuItemsEnabled(isTestRunning: false)
+                self.updateMenuState()
+                self.updateSpeed()
                 
-                // Hide and stop progress indicator
-                self.progressIndicator.stopAnimation(nil)
-                self.progressIndicator.isHidden = true
-                self.showMaxSpeed = true
-                if let menuItem = self.statusItem.menu?.items.first {
-                    menuItem.title = "Show Live Speed"
-                }
-                // The next updateSpeed call will show "max:" prefix
-                
+                // ...existing completion code...
                 switch type {
                 case .download, .upload:
                     if let speed = result.download ?? result.upload {
@@ -322,32 +332,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         cancelTest = { [weak self] in
             self?.speedTest.cancelCurrentTest()
             self?.isTestingSpeed = false
-            self?.updateMenuItemsEnabled(isTestRunning: false)
+            self?.updateMenuState()
         }
     }
     
-    private func updateMenuItemsEnabled(isTestRunning: Bool) {
+    private func updateMenuState() {
         guard let menu = statusItem.menu else { return }
         
-        // Find our control items
-        let liveItem = menu.items.first { $0.keyEquivalent == "l" }
-        let maxItem = menu.items.first { $0.keyEquivalent == "m" }
-        let resetItem = menu.items.first { $0.keyEquivalent == "r" }
+        // Update mode items
+        let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu
+        let liveItem = modeMenu?.items.first { $0.keyEquivalent == "l" }
+        let maxItem = modeMenu?.items.first { $0.keyEquivalent == "m" }
+        let resetItem = modeMenu?.items.first { $0.keyEquivalent == "r" }
+        
+        // Live is always enabled when not testing
+        liveItem?.isEnabled = !isTestingSpeed
+        
+        // Max and reset are enabled when in max mode and not testing
+        maxItem?.isEnabled = !isTestingSpeed
+        resetItem?.isEnabled = showMaxSpeed && !isTestingSpeed
+        
+        // Show current mode selection
+        liveItem?.state = !showMaxSpeed ? .on : .off
+        maxItem?.state = showMaxSpeed ? .on : .off
+        
+        // Update test items
+        let speedTestItem = menu.items.first { $0.title == "Speed Test" }
+        speedTestItem?.isEnabled = !isTestingSpeed
+        
+        // Show/hide cancel test
         let cancelItem = menu.items.first { $0.keyEquivalent == "c" }
-        
-        // Update visibility based on mode
-        liveItem?.isHidden = !showMaxSpeed
-        maxItem?.isHidden = showMaxSpeed
-        
-        // Update enabled state based on test status
-        let testItems = menu.items.filter { $0.action == #selector(startQuickTest) || $0.submenu != nil }
-        testItems.forEach { $0.isEnabled = !isTestRunning }
-        
-        // Show/hide cancel button
-        cancelItem?.isHidden = !isTestRunning
-        
-        // Reset button is enabled only in max mode and when not testing
-        resetItem?.isEnabled = showMaxSpeed && !isTestRunning
+        cancelItem?.isHidden = !isTestingSpeed
+    }
+    
+    @objc private func setLiveMode() {
+        showMaxSpeed = false
+        updateMenuState()
+        updateSpeed()
+    }
+    
+    @objc private func setMaxMode() {
+        showMaxSpeed = true
+        updateMenuState()
+        updateSpeed()
     }
     
     @objc private func cancelCurrentTest() {
