@@ -14,7 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = statusItem.button {
-            button.title = "↑0.00 ↓0.00 KB/s"
+            button.title = "↑000↓000"
         }
         
         // Create the menu
