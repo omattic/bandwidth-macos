@@ -14,7 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = statusItem.button {
-            button.title = "  0↓  0↑"
+            button.title = "   0.0↓   0.0↑"
             button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         }
         
@@ -24,7 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         
         // Start the timer to update speed every second
-        timer = Timer.scheduledTimer(timeInterval: 1.0, target: self, selector: #selector(updateSpeed), userInfo: nil, repeats: true)
+        timer = Timer.scheduledTimer(timeInterval: 2.0, target: self, selector: #selector(updateSpeed), userInfo: nil, repeats: true)
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -35,7 +35,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         speedMonitor.measureSpeed { downloadSpeed, uploadSpeed in
             DispatchQueue.main.async {
                 // Already in Mbps, just format with one decimal place
-                let formattedText = String(format: "%4.1f↓%4.1f↑", downloadSpeed, uploadSpeed)
+                let formattedText = String(format: "%5.1f↓ %5.1f↑", downloadSpeed, uploadSpeed)
                 if let button = self.statusItem.button {
                     button.title = formattedText
                 }
