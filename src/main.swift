@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var showMaxSpeed = false
     private var isTestingSpeed = false
+    private var progressIndicator: NSProgressIndicator!
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the speed monitor
@@ -17,7 +18,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Create the status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
+        // Create and configure progress indicator
+        progressIndicator = NSProgressIndicator()
+        progressIndicator.style = .spinning
+        progressIndicator.controlSize = .small
+        progressIndicator.isDisplayedWhenStopped = false
+        progressIndicator.isHidden = true
+        progressIndicator.frame = NSRect(x: 2, y: 2, width: 16, height: 16)
+        
         if let button = statusItem.button {
+            button.frame = NSRect(x: 0, y: 0, width: button.frame.width + 20, height: button.frame.height)
+            button.addSubview(progressIndicator)
+            
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             ]
@@ -78,12 +90,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         speedTestMenu.addItem(combinedItem)
         
         let modeMenuItem = NSMenuItem(
-            title: "Show Max Speed",
+            title: "Show Max",
             action: #selector(toggleMode),
             keyEquivalent: "m"
         )
         let resetMaxMenuItem = NSMenuItem(
-            title: "Reset Max Speed",
+            title: "Reset Max",
             action: #selector(resetMaxSpeed),
             keyEquivalent: "r"
         )
@@ -130,8 +142,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     
                     let text = NSMutableAttributedString()
                     
-                    if self.showMaxSpeed {
-                        text.append(NSAttributedString(string: "speed:", attributes: attrs))
+                    if !self.isTestingSpeed {
+                        if self.showMaxSpeed {
+                            text.append(NSAttributedString(string: "max:", attributes: attrs))
+                        }
                     }
                     
                     text.append(NSAttributedString(
@@ -171,6 +185,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isTestingSpeed else { return }
         isTestingSpeed = true
         
+        // Show and start progress indicator
+        progressIndicator.isHidden = false
+        progressIndicator.startAnimation(nil)
+        
         // Switch to max speed mode
         if !showMaxSpeed {
             showMaxSpeed = true
@@ -183,12 +201,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             ]
-            let testingText = switch type {
-            case .download: "Testing ↓..."
-            case .upload: "Testing ↑..."
-            case .combinedSerial: "Testing ↓↑..."
-            case .combinedParallel: "Testing ⇅..."
+            let suffix = switch type {
+                case .download: "↓..."
+                case .upload: "↑..."
+                case .combinedSerial: "↓↑..."
+                case .combinedParallel: "⇅..."
             }
+            let testingText = "speedtest: " + suffix
             button.attributedTitle = NSAttributedString(string: testingText, attributes: attrs)
         }
         
@@ -197,6 +216,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } completion: { result in
             DispatchQueue.main.async {
                 self.isTestingSpeed = false
+                // Hide and stop progress indicator
+                self.progressIndicator.stopAnimation(nil)
+                self.progressIndicator.isHidden = true
+                self.showMaxSpeed = true
+                if let menuItem = self.statusItem.menu?.items.first {
+                    menuItem.title = "Show Live Speed"
+                }
+                // The next updateSpeed call will show "max:" prefix
+                
                 switch type {
                 case .download, .upload:
                     if let speed = result.download ?? result.upload {

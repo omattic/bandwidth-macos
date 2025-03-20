@@ -8,7 +8,7 @@ class SpeedTest {
         
         var byteCount: Int {
             switch self {
-            case .small: return 10_000_000    // 10 MB
+            case .small: return 10_000_00    // 10 MB
             case .medium: return 100_000_000  // 100 MB
             case .large: return 1_000_000_000 // 1 GB
             }
