@@ -10,6 +10,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var isTestingSpeed = false
     private var progressIndicator: NSProgressIndicator!
     private var cancelTest: (() -> Void)?
+    private var showLatency = true // Default to showing latency
+    private var currentLatency: Double = 0.0 // Store the current latency
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the monitors
@@ -51,6 +53,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         modeGroup.addItem(liveMenuItem)
         modeGroup.addItem(maxMenuItem)
         modeGroup.addItem(resetMaxMenuItem)
+        
+        // Add Latency toggle option
+        modeGroup.addItem(NSMenuItem.separator())
+        let latencyMenuItem = NSMenuItem(title: "Show Latency", action: #selector(toggleLatency), keyEquivalent: "p")
+        latencyMenuItem.state = showLatency ? .on : .off
+        modeGroup.addItem(latencyMenuItem)
         
         menu.addItem(modeItem)
         menu.addItem(NSMenuItem.separator())
@@ -114,12 +122,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Set initial state
         updateMenuState()
         
-        // Start the timer to update speed every second
-        timer = Timer.scheduledTimer(timeInterval: 2.0, target: self, selector: #selector(updateSpeed), userInfo: nil, repeats: true)
+        // Start the timer to update speed every second and measure latency
+        timer = Timer.scheduledTimer(timeInterval: 2.0, target: self, selector: #selector(updateSpeedAndLatency), userInfo: nil, repeats: true)
+        
+        // Initial latency measurement
+        measureLatency()
     }
     
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+    }
+
+    @objc private func updateSpeedAndLatency() {
+        updateSpeed()
+        measureLatency()
+    }
+    
+    // Measure network latency using a simple HTTP request
+    private func measureLatency() {
+        guard let url = URL(string: "https://www.apple.com") else { return }
+        
+        let startTime = Date()
+        let task = URLSession.shared.dataTask(with: url) { [weak self] _, _, error in
+            guard let self = self, error == nil else { return }
+            
+            let elapsed = Date().timeIntervalSince(startTime) * 1000 // Convert to ms
+            DispatchQueue.main.async {
+                self.currentLatency = elapsed
+                self.updateSpeed() // Refresh display to show new latency
+            }
+        }
+        task.resume()
+    }
+    
+    @objc private func toggleLatency() {
+        showLatency.toggle()
+        
+        // Update the menu item state
+        if let menu = statusItem.menu,
+           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
+           let latencyItem = modeMenu.items.first(where: { $0.keyEquivalent == "p" }) {
+            latencyItem.state = showLatency ? .on : .off
+        }
+        
+        // Update the display immediately
+        updateSpeed()
     }
     
     @objc private func toggleMode() {
@@ -158,6 +205,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     ]
                     
                     let text = NSMutableAttributedString()
+                    
+                    // Show latency if enabled
+                    if self.showLatency {
+                        text.append(NSAttributedString(
+                            string: String(format: "%3.0fms ", self.currentLatency),
+                            attributes: attrs
+                        ))
+                    }
                     
                     // Always show current mode
                     let modeLabel = self.showMaxSpeed ? "[max] " : "[live] "
