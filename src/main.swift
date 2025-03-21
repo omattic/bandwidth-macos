@@ -15,6 +15,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentLatency: Double = 0.0 // Store the current latency
     private var lastSuccessfulLatencyCheck = Date(timeIntervalSince1970: 0)
     private var latencyMeasurementInProgress = false
+    private var isNetworkConnected = true // Track network connectivity status
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the monitors
@@ -285,7 +286,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Then try to measure latency if network is available
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 guard let self = self else { return }
-                if self.checkNetworkSafely() {
+                self.isNetworkConnected = self.checkNetworkSafely()
+                if self.isNetworkConnected {
                     self.measureLatencySafely()
                 }
             }
@@ -319,19 +321,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func updateSpeedOnly() {
         do {
-            // Capture any exceptions that might occur during speed measurement
-            speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp in
-                // Make absolutely sure we don't force unwrap self
-                guard let self = self else { return }
-                
-                // Dispatch to main thread but don't force-unwrap self again
-                DispatchQueue.main.async { [weak self] in
-                    // Another safety check for self
+            // First check network availability before measuring speed
+            self.isNetworkConnected = checkNetworkSafely()
+            
+            // Only try to measure speed if network is available
+            if self.isNetworkConnected {
+                // Capture any exceptions that might occur during speed measurement
+                speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp in
+                    // Make absolutely sure we don't force unwrap self
                     guard let self = self else { return }
                     
-                    // Use the separate UI update method which is safer
-                    self.updateStatusDisplay(currentDown: currentDown, currentUp: currentUp, 
-                                           maxDown: maxDown, maxUp: maxUp)
+                    // Dispatch to main thread but don't force-unwrap self again
+                    DispatchQueue.main.async { [weak self] in
+                        // Another safety check for self
+                        guard let self = self else { return }
+                        
+                        // Use the separate UI update method which is safer
+                        self.updateStatusDisplay(currentDown: currentDown, currentUp: currentUp, 
+                                               maxDown: maxDown, maxUp: maxUp)
+                    }
+                }
+            } else {
+                // Network is not available, update UI to show disconnected state
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    self.updateStatusDisplay(currentDown: 0.0, currentUp: 0.0, 
+                                           maxDown: 0.0, maxUp: 0.0)
                 }
             }
         } catch {
@@ -534,6 +549,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleNetworkChange(flags: SCNetworkReachabilityFlags) {
         let isReachable = flags.contains(.reachable) && !flags.contains(.connectionRequired)
         
+        // Update network status
+        self.isNetworkConnected = isReachable
+        
         // Update UI immediately to show current state
         if (!isReachable) {
             // Network disconnected
@@ -598,10 +616,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let canAutoConnect = flags.contains(.connectionOnDemand) || flags.contains(.connectionOnTraffic)
             let canConnect = (isReachable && (!needsConnection || canAutoConnect))
             
+            // Update the network status
+            self.isNetworkConnected = canConnect
             return canConnect
         } catch {
             // If anything goes wrong, assume network is unavailable
             print("Exception in checkNetworkSafely: \(error)")
+            self.isNetworkConnected = false
             return false
         }
     }
@@ -679,9 +700,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusDisplay(currentDown: Double, currentUp: Double, maxDown: Double, maxUp: Double) {
         guard let button = statusItem.button else { return }
         
-        let down = showMaxSpeed ? maxDown : currentDown
-        let up = showMaxSpeed ? maxUp : currentUp
-        
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         ]
@@ -692,8 +710,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
             .foregroundColor: NSColor.red
         ]
+        let disconnectedAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold),
+            .foregroundColor: NSColor.red
+        ]
         
         let text = NSMutableAttributedString()
+        
+        // Check if network is disconnected
+        if !isNetworkConnected {
+            // Show disconnected message
+            text.append(NSAttributedString(string: "Disconnected", attributes: disconnectedAttrs))
+            button.attributedTitle = text
+            return
+        }
+        
+        let down = showMaxSpeed ? maxDown : currentDown
+        let up = showMaxSpeed ? maxUp : currentUp
         
         // Always show current mode
         let modeLabel = showMaxSpeed ? "[max] " : "[live] "
