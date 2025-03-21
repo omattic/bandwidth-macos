@@ -718,6 +718,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
             .foregroundColor: NSColor.white
         ]
+        let highLatencyAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold),
+            .foregroundColor: NSColor.red
+        ]
         
         let text = NSMutableAttributedString()
         
@@ -739,6 +743,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 text.append(NSAttributedString(
                     string: "∞ ms",
                     attributes: warningAttrs
+                ))
+            } else if currentLatency > 1000 {
+                // Show high latency in red
+                text.append(NSAttributedString(
+                    string: String(format: "%3.0fms ", currentLatency),
+                    attributes: highLatencyAttrs
                 ))
             } else {
                 // Normal latency display
