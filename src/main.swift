@@ -51,8 +51,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let modeItem = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
         modeItem.submenu = modeGroup
         
-        let liveMenuItem = NSMenuItem(title: "Live Speed", action: #selector(setLiveMode), keyEquivalent: "l")
-        let maxMenuItem = NSMenuItem(title: "Show Max Speed", action: #selector(setMaxMode), keyEquivalent: "m")
+        let liveMenuItem = NSMenuItem(title: "Live Bandwidth", action: #selector(setLiveMode), keyEquivalent: "l")
+        let maxMenuItem = NSMenuItem(title: "Show Max Bandwidth", action: #selector(setMaxMode), keyEquivalent: "m")
         let resetMaxMenuItem = NSMenuItem(title: "Reset Max", action: #selector(resetMaxSpeed), keyEquivalent: "r")
         modeGroup.addItem(liveMenuItem)
         modeGroup.addItem(maxMenuItem)
@@ -712,7 +712,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ]
         let disconnectedAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold),
-            .foregroundColor: NSColor.red
+            .foregroundColor: NSColor.white
+        ]
+        let latencyAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+            .foregroundColor: NSColor.white
         ]
         
         let text = NSMutableAttributedString()
@@ -720,7 +724,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Check if network is disconnected
         if !isNetworkConnected {
             // Show disconnected message
-            text.append(NSAttributedString(string: "Disconnected", attributes: disconnectedAttrs))
+            text.append(NSAttributedString(string: "Offline", attributes: disconnectedAttrs))
             button.attributedTitle = text
             return
         }
@@ -728,40 +732,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let down = showMaxSpeed ? maxDown : currentDown
         let up = showMaxSpeed ? maxUp : currentUp
         
-        // Always show current mode
-        let modeLabel = showMaxSpeed ? "[max] " : "[live] "
-        text.append(NSAttributedString(string: modeLabel, attributes: attrs))
-        
-        if showMaxSpeed {
-            text.append(NSAttributedString(string: "max:", attributes: attrs))
-        }
-        
-        text.append(NSAttributedString(
-            string: String(format: "%6.1f", down),
-            attributes: attrs
-        ))
-        text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
-        text.append(NSAttributedString(
-            string: String(format: "%6.1f", up),
-            attributes: attrs
-        ))
-        text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
-        
-        // Show latency if enabled
+        // Show latency first if enabled (on the left side)
         if showLatency {
             if currentLatency < 0 {
                 // Show error instead of latency
                 text.append(NSAttributedString(
-                    string: "ERR! ",
+                    string: "∞ ms",
                     attributes: warningAttrs
                 ))
             } else {
                 // Normal latency display
                 text.append(NSAttributedString(
                     string: String(format: "%3.0fms ", currentLatency),
-                    attributes: attrs
+                    attributes: latencyAttrs
                 ))
             }
+        }
+        
+        // Show download speed
+        text.append(NSAttributedString(
+            string: String(format: "%6.1f", down),
+            attributes: attrs
+        ))
+        text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+        
+        // Show upload speed
+        text.append(NSAttributedString(
+            string: String(format: "%6.1f", up),
+            attributes: attrs
+        ))
+        text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+        
+        // Only show [max] label when in max mode, now at the right
+        if showMaxSpeed {
+            text.append(NSAttributedString(string: " [max]", attributes: attrs))
         }
         
         button.attributedTitle = text
