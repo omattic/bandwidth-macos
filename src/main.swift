@@ -66,18 +66,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Create the status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
-        // Create and configure progress indicator
-        progressIndicator = NSProgressIndicator()
-        progressIndicator.style = .spinning
-        progressIndicator.controlSize = .small
-        progressIndicator.isDisplayedWhenStopped = false
-        progressIndicator.isHidden = true
-        progressIndicator.frame = NSRect(x: 2, y: 2, width: 16, height: 16)
-        
+        // Remove progress indicator setup and leave only basic button setup
         if let button = statusItem.button {
-            button.frame = NSRect(x: 0, y: 0, width: button.frame.width + 20, height: button.frame.height)
-            button.addSubview(progressIndicator)
-            
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             ]
@@ -277,30 +267,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         updateMenuState()
         
-        // Show and start progress indicator
-        progressIndicator.isHidden = false
-        progressIndicator.startAnimation(nil)
-        
-        // Switch to max speed mode
-        if !showMaxSpeed {
-            showMaxSpeed = true
-            if let modeMenuItem = statusItem.menu?.items.first(where: { $0.keyEquivalent == "m" }) {
-                modeMenuItem.title = "Show Live"
-            }
-        }
-        
         if let button = statusItem.button {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             ]
-            let suffix = switch type {
-                case .download: "↓..."
-                case .upload: "↑..."
-                case .combinedSerial: "↓↑..."
-                case .combinedParallel: "⇅..."
-            }
-            let testingText = "speedtest: " + suffix
-            button.attributedTitle = NSAttributedString(string: testingText, attributes: attrs)
+            let text = "Testing speed..."
+            button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
         }
         
         speedTest.startTest(size: size, type: type) { progress in
@@ -333,6 +305,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.speedTest.cancelCurrentTest()
             self?.isTestingSpeed = false
             self?.updateMenuState()
+            self?.updateSpeed()  // Fix: use optional chaining here
         }
     }
     
