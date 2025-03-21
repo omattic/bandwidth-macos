@@ -140,15 +140,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // Measure network latency using a simple HTTP request
     private func measureLatency() {
-        guard let url = URL(string: "https://www.apple.com") else { return }
+        // Use a URL that consistently returns a small response and is reliable
+        guard let url = URL(string: "https://speed.cloudflare.com/") else { return }
+        
+        // Configure a session with no caching to ensure we're measuring actual network latency
+        let config = URLSessionConfiguration.ephemeral
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        config.timeoutIntervalForRequest = 10.0
+        let session = URLSession(configuration: config)
         
         let startTime = Date()
-        let task = URLSession.shared.dataTask(with: url) { [weak self] _, _, error in
-            guard let self = self, error == nil else { return }
+        let task = session.dataTask(with: url) { [weak self] _, response, error in
+            guard let self = self else { return }
             
-            let elapsed = Date().timeIntervalSince(startTime) * 1000 // Convert to ms
             DispatchQueue.main.async {
-                self.currentLatency = elapsed
+                if let error = error {
+                    // If there's an error, store a negative value to indicate failure
+                    self.currentLatency = -1
+                    print("Latency measurement error: \(error.localizedDescription)")
+                } else if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    // Only count successful responses
+                    let elapsed = Date().timeIntervalSince(startTime) * 1000 // Convert to ms
+                    self.currentLatency = elapsed
+                } else {
+                    // Unexpected response
+                    self.currentLatency = -2
+                    print("Unexpected response: \(String(describing: response))")
+                }
                 self.updateSpeed() // Refresh display to show new latency
             }
         }
@@ -203,15 +221,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     let boldAttrs: [NSAttributedString.Key: Any] = [
                         .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
                     ]
+                    let warningAttrs: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+                        .foregroundColor: NSColor.red
+                    ]
                     
                     let text = NSMutableAttributedString()
                     
                     // Show latency if enabled
                     if self.showLatency {
-                        text.append(NSAttributedString(
-                            string: String(format: "%3.0fms ", self.currentLatency),
-                            attributes: attrs
-                        ))
+                        if self.currentLatency < 0 {
+                            // Show error instead of latency
+                            text.append(NSAttributedString(
+                                string: "ERR! ",
+                                attributes: warningAttrs
+                            ))
+                        } else {
+                            text.append(NSAttributedString(
+                                string: String(format: "%3.0fms ", self.currentLatency),
+                                attributes: attrs
+                            ))
+                        }
                     }
                     
                     // Always show current mode
