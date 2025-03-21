@@ -125,18 +125,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Set initial state
         updateMenuState()
         
-        // Much safer timer initialization that separates network operations
-        timer = Timer.scheduledTimer(timeInterval: 2.0, target: self, selector: #selector(updateSpeedOnly), userInfo: nil, repeats: true)
+        // Critical change: Only use ONE timer that only updates speed data
+        // No network operations in the timer at all
+        timer = Timer.scheduledTimer(timeInterval: 2.0, 
+                                    target: self, 
+                                    selector: #selector(updateSpeedOnly), 
+                                    userInfo: nil, 
+                                    repeats: true)
         
-        // Initial speed update only (no network activity)
+        // Initial speed update only (no network)
         updateSpeedOnly()
         
-        // Start monitoring network changes
-        startMonitoringNetworkChanges()
+        // Set the latency to error state by default
+        currentLatency = -1
         
-        // Start a separate timer with longer intervals for latency checks
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            self?.startSafeLatencyTimer()
+        // Schedule a ONE-TIME latency check after delay with safeguards
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self = self else { return }
+            self.startSafeLatencyTimer()
         }
     }
     
@@ -265,7 +271,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         // Update the display immediately
-        updateSpeed()
+        if !showLatency {
+            // If turning off, just update display without latency
+            updateSpeedOnly()
+        } else {
+            // If turning on, schedule a latency check
+            currentLatency = -1 // Default to error state
+            updateSpeedOnly() // Update UI immediately
+            
+            // Then try to measure latency if network is available
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self = self else { return }
+                if self.checkNetworkSafely() {
+                    self.measureLatencySafely()
+                }
+            }
+        }
     }
     
     @objc private func toggleMode() {
