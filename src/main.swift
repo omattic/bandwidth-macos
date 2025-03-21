@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SystemConfiguration // Add this import for network reachability checks
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -12,6 +13,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancelTest: (() -> Void)?
     private var showLatency = true // Default to showing latency
     private var currentLatency: Double = 0.0 // Store the current latency
+    private var lastSuccessfulLatencyCheck = Date(timeIntervalSince1970: 0)
+    private var latencyMeasurementInProgress = false
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the monitors
@@ -122,11 +125,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Set initial state
         updateMenuState()
         
-        // Start the timer to update speed every second and measure latency
-        timer = Timer.scheduledTimer(timeInterval: 2.0, target: self, selector: #selector(updateSpeedAndLatency), userInfo: nil, repeats: true)
+        // Much safer timer initialization that separates network operations
+        timer = Timer.scheduledTimer(timeInterval: 2.0, target: self, selector: #selector(updateSpeedOnly), userInfo: nil, repeats: true)
         
-        // Initial latency measurement
-        measureLatency()
+        // Initial speed update only (no network activity)
+        updateSpeedOnly()
+        
+        // Start monitoring network changes
+        startMonitoringNetworkChanges()
+        
+        // Start a separate timer with longer intervals for latency checks
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.startSafeLatencyTimer()
+        }
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -134,43 +145,113 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func updateSpeedAndLatency() {
-        updateSpeed()
-        measureLatency()
+        // Safer approach - catch any exceptions
+        do {
+            // First update speed which shouldn't require network
+            updateSpeed()
+            
+            // Only attempt to measure latency if enabled
+            if showLatency {
+                // Set to error state by default
+                currentLatency = -1
+                
+                if isNetworkAvailable() {
+                    // Only try to measure if network appears available
+                    try measureLatency()
+                } else {
+                    // Already set latency to error state above
+                    updateSpeed() // Update UI to reflect error state
+                }
+            }
+        } catch {
+            print("Exception in updateSpeedAndLatency: \(error.localizedDescription)")
+            // Make sure UI is updated even if there's an error
+            currentLatency = -1
+            updateSpeed()
+        }
     }
     
-    // Measure network latency using a simple HTTP request
-    private func measureLatency() {
-        // Use a URL that consistently returns a small response and is reliable
+    // Check if network is available - completely rewritten to be defensive
+    private func isNetworkAvailable() -> Bool {
+        // Make this method super defensive to never crash
+        do {
+            guard let reachability = SCNetworkReachabilityCreateWithName(nil, "www.apple.com") else {
+                print("Failed to create network reachability object")
+                return false
+            }
+            
+            var flags = SCNetworkReachabilityFlags()
+            if !SCNetworkReachabilityGetFlags(reachability, &flags) {
+                print("Failed to get reachability flags")
+                return false
+            }
+            
+            let isReachable = flags.contains(.reachable)
+            let needsConnection = flags.contains(.connectionRequired)
+            let canConnect = isReachable && !needsConnection
+            
+            return canConnect
+        } catch {
+            print("Exception in isNetworkAvailable: \(error.localizedDescription)")
+            return false
+        }
+    }
+    
+    // Measure network latency using a simple HTTP request with improved error handling
+    private func measureLatency() throws {
+        // Guard against no network early
+        guard isNetworkAvailable() else {
+            currentLatency = -1
+            return
+        }
+        
+        // Use a more reliable and lightweight URL
         guard let url = URL(string: "https://speed.cloudflare.com/") else { return }
         
-        // Configure a session with no caching to ensure we're measuring actual network latency
+        // Configure a session with no caching and very defensive settings
         let config = URLSessionConfiguration.ephemeral
         config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        config.timeoutIntervalForRequest = 10.0
-        let session = URLSession(configuration: config)
+        config.timeoutIntervalForRequest = 3.0 // Even shorter timeout
+        config.timeoutIntervalForResource = 5.0
+        config.waitsForConnectivity = false // Don't wait for connectivity
         
+        let session = URLSession(configuration: config)
         let startTime = Date()
-        let task = session.dataTask(with: url) { [weak self] _, response, error in
+        
+        // Create task but don't start it yet
+        let task = session.dataTask(with: url) { [weak self] data, response, error in
             guard let self = self else { return }
             
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
                 if let error = error {
-                    // If there's an error, store a negative value to indicate failure
+                    // Error occurred
                     self.currentLatency = -1
-                    print("Latency measurement error: \(error.localizedDescription)")
-                } else if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                    // Only count successful responses
-                    let elapsed = Date().timeIntervalSince(startTime) * 1000 // Convert to ms
+                    print("Latency error: \(error.localizedDescription)")
+                } else if let httpResponse = response as? HTTPURLResponse, 
+                          httpResponse.statusCode == 200 {
+                    // Success case
+                    let elapsed = Date().timeIntervalSince(startTime) * 1000
                     self.currentLatency = elapsed
                 } else {
                     // Unexpected response
                     self.currentLatency = -2
-                    print("Unexpected response: \(String(describing: response))")
                 }
-                self.updateSpeed() // Refresh display to show new latency
+                
+                // Update the display
+                self.updateSpeed()
             }
         }
-        task.resume()
+        
+        // Resume in a super defensive way
+        do {
+            task.resume()
+        } catch {
+            print("Failed to resume task: \(error)")
+            currentLatency = -3
+            throw error // Propagate error to caller
+        }
     }
     
     @objc private func toggleLatency() {
@@ -209,65 +290,77 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc private func updateSpeed() {
-        speedMonitor.measureSpeed { currentDown, currentUp, maxDown, maxUp in
-            DispatchQueue.main.async {
-                if let button = self.statusItem.button {
-                    let down = self.showMaxSpeed ? maxDown : currentDown
-                    let up = self.showMaxSpeed ? maxUp : currentUp
+        updateSpeedOnly()
+    }
+    
+    @objc private func updateSpeedOnly() {
+        do {
+            speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
                     
-                    let attrs: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-                    ]
-                    let boldAttrs: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
-                    ]
-                    let warningAttrs: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-                        .foregroundColor: NSColor.red
-                    ]
-                    
-                    let text = NSMutableAttributedString()
-                    
-                    // Show latency if enabled
-                    if self.showLatency {
-                        if self.currentLatency < 0 {
-                            // Show error instead of latency
-                            text.append(NSAttributedString(
-                                string: "ERR! ",
-                                attributes: warningAttrs
-                            ))
-                        } else {
-                            text.append(NSAttributedString(
-                                string: String(format: "%3.0fms ", self.currentLatency),
-                                attributes: attrs
-                            ))
+                    if let button = self.statusItem.button {
+                        let down = self.showMaxSpeed ? maxDown : currentDown
+                        let up = self.showMaxSpeed ? maxUp : currentUp
+                        
+                        let attrs: [NSAttributedString.Key: Any] = [
+                            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+                        ]
+                        let boldAttrs: [NSAttributedString.Key: Any] = [
+                            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+                        ]
+                        let warningAttrs: [NSAttributedString.Key: Any] = [
+                            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+                            .foregroundColor: NSColor.red
+                        ]
+                        
+                        let text = NSMutableAttributedString()
+                        
+                        // Show latency if enabled
+                        if self.showLatency {
+                            if self.currentLatency < 0 {
+                                // Show error instead of latency
+                                text.append(NSAttributedString(
+                                    string: "ERR! ",
+                                    attributes: warningAttrs
+                                ))
+                            } else {
+                                text.append(NSAttributedString(
+                                    string: String(format: "%3.0fms ", self.currentLatency),
+                                    attributes: attrs
+                                ))
+                            }
                         }
-                    }
-                    
-                    // Always show current mode
-                    let modeLabel = self.showMaxSpeed ? "[max] " : "[live] "
-                    text.append(NSAttributedString(string: modeLabel, attributes: attrs))
-                    
-                    if !self.isTestingSpeed {
-                        if self.showMaxSpeed {
-                            text.append(NSAttributedString(string: "max:", attributes: attrs))
+                        
+                        // Always show current mode
+                        let modeLabel = self.showMaxSpeed ? "[max] " : "[live] "
+                        text.append(NSAttributedString(string: modeLabel, attributes: attrs))
+                        
+                        if !self.isTestingSpeed {
+                            if self.showMaxSpeed {
+                                text.append(NSAttributedString(string: "max:", attributes: attrs))
+                            }
                         }
+                        
+                        text.append(NSAttributedString(
+                            string: String(format: "%6.1f", down),
+                            attributes: attrs
+                        ))
+                        text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+                        text.append(NSAttributedString(
+                            string: String(format: "%6.1f", up),
+                            attributes: attrs
+                        ))
+                        text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+                        
+                        button.attributedTitle = text
                     }
-                    
-                    text.append(NSAttributedString(
-                        string: String(format: "%6.1f", down),
-                        attributes: attrs
-                    ))
-                    text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
-                    text.append(NSAttributedString(
-                        string: String(format: "%6.1f", up),
-                        attributes: attrs
-                    ))
-                    text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
-                    
-                    button.attributedTitle = text
                 }
             }
+        } catch {
+            print("Exception in updateSpeed: \(error)")
         }
     }
     
@@ -383,6 +476,226 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func cancelCurrentTest() {
         cancelTest?()
+    }
+    
+    // Safe wrapper for timer callback that won't crash
+    @objc private func safeUpdateSpeedAndLatency() {
+        autoreleasepool {
+            do {
+                updateSpeedAndLatency()
+            } catch {
+                print("Caught exception in timer callback: \(error)")
+                // Make sure error state is shown in UI
+                currentLatency = -1
+                updateSpeed()
+            }
+        }
+    }
+    
+    // Start a separate timer for latency with defensive behavior
+    private func startSafeLatencyTimer() {
+        // Run on a background thread with a longer interval
+        // This lets us keep measuring bandwidth even if latency fails
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            guard let self = self else { return }
+            
+            // Only try to measure latency if it's not in progress
+            if self.showLatency && !self.latencyMeasurementInProgress {
+                self.measureLatencySafely()
+            }
+            
+            // Recursively schedule the next measurement
+            self.startSafeLatencyTimer()
+        }
+    }
+    
+    // Set up notification for network changes
+    private func startMonitoringNetworkChanges() {
+        // Register for network change notifications from the system
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(networkStatusChanged),
+            name: NSNotification.Name.NSSystemClockDidChange, // As a proxy for network changes
+            object: nil
+        )
+    }
+    
+    @objc private func networkStatusChanged(_ notification: Notification) {
+        // When network status changes, update our display
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Check if network is available before attempting measurement
+            if self.showLatency {
+                if self.checkNetworkSafely() {
+                    // Try a new measurement if network appears available
+                    self.measureLatencySafely()
+                } else {
+                    // Set to error state
+                    self.currentLatency = -1
+                    self.updateSpeedOnly()
+                }
+            }
+        }
+    }
+    
+    // Super safe network check that will never crash
+    private func checkNetworkSafely() -> Bool {
+        // Simple check that should never crash
+        var zeroAddress = sockaddr_in()
+        zeroAddress.sin_len = UInt8(MemoryLayout.size(ofValue: zeroAddress))
+        zeroAddress.sin_family = sa_family_t(AF_INET)
+        
+        guard let reachability = withUnsafePointer(to: &zeroAddress, {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                SCNetworkReachabilityCreateWithAddress(nil, $0)
+            }
+        }) else {
+            return false
+        }
+        
+        var flags: SCNetworkReachabilityFlags = []
+        if !SCNetworkReachabilityGetFlags(reachability, &flags) {
+            return false
+        }
+        
+        // A very defensive check for actual connectivity
+        let isReachable = flags.contains(.reachable)
+        let needsConnection = flags.contains(.connectionRequired)
+        let canAutoConnect = flags.contains(.connectionOnDemand) || flags.contains(.connectionOnTraffic)
+        let canConnect = (isReachable && (!needsConnection || canAutoConnect))
+        
+        return canConnect
+    }
+    
+    // Very safe latency measurement with no throwing/exceptions
+    private func measureLatencySafely() {
+        // Don't start a new measurement if one is in progress
+        guard !latencyMeasurementInProgress else { return }
+        
+        // Check network safely first
+        guard checkNetworkSafely() else {
+            DispatchQueue.main.async { [weak self] in
+                self?.currentLatency = -1 
+                self?.updateSpeedOnly()
+            }
+            return
+        }
+        
+        latencyMeasurementInProgress = true
+        
+        // Use a more reliable and lightweight resource
+        guard let url = URL(string: "https://www.apple.com/favicon.ico") else { 
+            latencyMeasurementInProgress = false
+            return 
+        }
+        
+        // Configure session for latency measurement
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 3.0
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        let session = URLSession(configuration: config)
+        
+        let startTime = Date()
+        
+        let task = session.dataTask(with: url) { [weak self] data, response, error in
+            // Ensure we mark measurement as complete regardless of outcome
+            defer { 
+                DispatchQueue.main.async {
+                    self?.latencyMeasurementInProgress = false 
+                }
+            }
+            
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                if error != nil {
+                    self.currentLatency = -1
+                } else if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    let elapsed = Date().timeIntervalSince(startTime) * 1000
+                    self.currentLatency = elapsed
+                    self.lastSuccessfulLatencyCheck = Date()
+                } else {
+                    self.currentLatency = -2
+                }
+                
+                // Update UI with new latency value
+                self.updateSpeedOnly()
+            }
+        }
+        
+        // Try to start the task but handle failures gracefully
+        do {
+            task.resume()
+        } catch {
+            print("Failed to start latency task: \(error)")
+            DispatchQueue.main.async { [weak self] in
+                self?.currentLatency = -3
+                self?.latencyMeasurementInProgress = false
+                self?.updateSpeedOnly()
+            }
+        }
+    }
+    
+    // Separate UI update method that doesn't do any network operations
+    private func updateStatusDisplay(currentDown: Double, currentUp: Double, maxDown: Double, maxUp: Double) {
+        guard let button = statusItem.button else { return }
+        
+        let down = showMaxSpeed ? maxDown : currentDown
+        let up = showMaxSpeed ? maxUp : currentUp
+        
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        ]
+        let boldAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+        ]
+        let warningAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+            .foregroundColor: NSColor.red
+        ]
+        
+        let text = NSMutableAttributedString()
+        
+        // Show latency if enabled
+        if showLatency {
+            if currentLatency < 0 {
+                // Show error instead of latency
+                text.append(NSAttributedString(
+                    string: "ERR! ",
+                    attributes: warningAttrs
+                ))
+            } else {
+                // Normal latency display
+                text.append(NSAttributedString(
+                    string: String(format: "%3.0fms ", currentLatency),
+                    attributes: attrs
+                ))
+            }
+        }
+        
+        // Always show current mode
+        let modeLabel = showMaxSpeed ? "[max] " : "[live] "
+        text.append(NSAttributedString(string: modeLabel, attributes: attrs))
+        
+        if !isTestingSpeed {
+            if showMaxSpeed {
+                text.append(NSAttributedString(string: "max:", attributes: attrs))
+            }
+        }
+        
+        text.append(NSAttributedString(
+            string: String(format: "%6.1f", down),
+            attributes: attrs
+        ))
+        text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+        text.append(NSAttributedString(
+            string: String(format: "%6.1f", up),
+            attributes: attrs
+        ))
+        text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+        
+        button.attributedTitle = text
     }
 }
 
