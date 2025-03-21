@@ -139,6 +139,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Set the latency to error state by default
         currentLatency = -1
         
+        // Start monitoring network status changes - add this to be notified when WiFi turns off/on
+        startMonitoringNetworkChanges()
+        
         // Schedule a ONE-TIME latency check after delay with safeguards
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
             guard let self = self else { return }
@@ -271,7 +274,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         // Update the display immediately
-        if !showLatency {
+        if (!showLatency) {
             // If turning off, just update display without latency
             updateSpeedOnly()
         } else {
@@ -316,72 +319,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func updateSpeedOnly() {
         do {
+            // Capture any exceptions that might occur during speed measurement
             speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp in
+                // Make absolutely sure we don't force unwrap self
                 guard let self = self else { return }
                 
+                // Dispatch to main thread but don't force-unwrap self again
                 DispatchQueue.main.async { [weak self] in
+                    // Another safety check for self
                     guard let self = self else { return }
                     
-                    if let button = self.statusItem.button {
-                        let down = self.showMaxSpeed ? maxDown : currentDown
-                        let up = self.showMaxSpeed ? maxUp : currentUp
-                        
-                        let attrs: [NSAttributedString.Key: Any] = [
-                            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-                        ]
-                        let boldAttrs: [NSAttributedString.Key: Any] = [
-                            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
-                        ]
-                        let warningAttrs: [NSAttributedString.Key: Any] = [
-                            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-                            .foregroundColor: NSColor.red
-                        ]
-                        
-                        let text = NSMutableAttributedString()
-                        
-                        // Show latency if enabled
-                        if self.showLatency {
-                            if self.currentLatency < 0 {
-                                // Show error instead of latency
-                                text.append(NSAttributedString(
-                                    string: "ERR! ",
-                                    attributes: warningAttrs
-                                ))
-                            } else {
-                                text.append(NSAttributedString(
-                                    string: String(format: "%3.0fms ", self.currentLatency),
-                                    attributes: attrs
-                                ))
-                            }
-                        }
-                        
-                        // Always show current mode
-                        let modeLabel = self.showMaxSpeed ? "[max] " : "[live] "
-                        text.append(NSAttributedString(string: modeLabel, attributes: attrs))
-                        
-                        if !self.isTestingSpeed {
-                            if self.showMaxSpeed {
-                                text.append(NSAttributedString(string: "max:", attributes: attrs))
-                            }
-                        }
-                        
-                        text.append(NSAttributedString(
-                            string: String(format: "%6.1f", down),
-                            attributes: attrs
-                        ))
-                        text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
-                        text.append(NSAttributedString(
-                            string: String(format: "%6.1f", up),
-                            attributes: attrs
-                        ))
-                        text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
-                        
-                        button.attributedTitle = text
-                    }
+                    // Use the separate UI update method which is safer
+                    self.updateStatusDisplay(currentDown: currentDown, currentUp: currentUp, 
+                                           maxDown: maxDown, maxUp: maxUp)
                 }
             }
         } catch {
-            print("Exception in updateSpeed: \(error)")
+            // If any exception occurs, log it
+            print("Exception in updateSpeedOnly: \(error)")
+            
+            // Ensure UI still updates with error state
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.updateStatusDisplay(currentDown: 0.0, currentUp: 0.0, 
+                                       maxDown: 0.0, maxUp: 0.0)
+            }
         }
     }
     
@@ -532,63 +494,118 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // Set up notification for network changes
     private func startMonitoringNetworkChanges() {
-        // Register for network change notifications from the system
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(networkStatusChanged),
-            name: NSNotification.Name.NSSystemClockDidChange, // As a proxy for network changes
-            object: nil
-        )
-    }
-    
-    @objc private func networkStatusChanged(_ notification: Notification) {
-        // When network status changes, update our display
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+        // Register for system configuration network changes
+        let reachability = SCNetworkReachabilityCreateWithName(nil, "www.apple.com")
+        if let reachability = reachability {
+            var context = SCNetworkReachabilityContext(version: 0, info: nil, retain: nil, release: nil, 
+                                                  copyDescription: nil)
             
-            // Check if network is available before attempting measurement
-            if self.showLatency {
-                if self.checkNetworkSafely() {
-                    // Try a new measurement if network appears available
-                    self.measureLatencySafely()
-                } else {
-                    // Set to error state
-                    self.currentLatency = -1
-                    self.updateSpeedOnly()
+            // Use Unmanaged to safely handle the self reference
+            context.info = Unmanaged.passUnretained(self).toOpaque()
+            
+            // Set callback with proper error handling
+            if SCNetworkReachabilitySetCallback(reachability, { (_, flags, info) in
+                guard let info = info else { return }
+                let instance = Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue()
+                
+                // Always dispatch to main thread for UI updates
+                DispatchQueue.main.async {
+                    instance.handleNetworkChange(flags: flags)
+                }
+            }, &context) {
+                // Only schedule if callback was set successfully
+                if SCNetworkReachabilityScheduleWithRunLoop(reachability, CFRunLoopGetMain(), 
+                                                        CFRunLoopMode.defaultMode.rawValue) {
+                    print("Network monitoring started")
                 }
             }
         }
+        
+        // Also monitor system notifications as backup
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(possibleNetworkChange),
+            name: NSNotification.Name.NSSystemClockDidChange,
+            object: nil
+        )
+    }
+
+    // Handler for direct network reachability changes
+    private func handleNetworkChange(flags: SCNetworkReachabilityFlags) {
+        let isReachable = flags.contains(.reachable) && !flags.contains(.connectionRequired)
+        
+        // Update UI immediately to show current state
+        if (!isReachable) {
+            // Network disconnected
+            self.currentLatency = -1
+        }
+        
+        // Update UI without blocking
+        DispatchQueue.main.async { [weak self] in
+            self?.updateSpeedOnly()
+        }
+        
+        // Only attempt a new measurement if network is available
+        if (isReachable && showLatency) {
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                self?.measureLatencySafely()
+            }
+        }
     }
     
+    // Generic system event that might indicate network change
+    @objc private func possibleNetworkChange(_ notification: Notification) {
+        // Check network status and update UI
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            
+            let hasNetwork = self.checkNetworkSafely()
+            
+            DispatchQueue.main.async {
+                if (!hasNetwork) {
+                    self.currentLatency = -1
+                }
+                self.updateSpeedOnly()
+            }
+        }
+    }
+
     // Super safe network check that will never crash
     private func checkNetworkSafely() -> Bool {
-        // Simple check that should never crash
-        var zeroAddress = sockaddr_in()
-        zeroAddress.sin_len = UInt8(MemoryLayout.size(ofValue: zeroAddress))
-        zeroAddress.sin_family = sa_family_t(AF_INET)
-        
-        guard let reachability = withUnsafePointer(to: &zeroAddress, {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                SCNetworkReachabilityCreateWithAddress(nil, $0)
+        // Wrap everything in a do-catch to prevent any possible crashes
+        do {
+            // Simple check that should never crash
+            var zeroAddress = sockaddr_in()
+            zeroAddress.sin_len = UInt8(MemoryLayout.size(ofValue: zeroAddress))
+            zeroAddress.sin_family = sa_family_t(AF_INET)
+            
+            guard let reachability = withUnsafePointer(to: &zeroAddress, {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    SCNetworkReachabilityCreateWithAddress(nil, $0)
+                }
+            }) else {
+                return false
             }
-        }) else {
+            
+            var flags: SCNetworkReachabilityFlags = []
+            if !SCNetworkReachabilityGetFlags(reachability, &flags) {
+                return false
+            }
+            
+            // A very defensive check for actual connectivity
+            let isReachable = flags.contains(.reachable)
+            let needsConnection = flags.contains(.connectionRequired)
+            let canAutoConnect = flags.contains(.connectionOnDemand) || flags.contains(.connectionOnTraffic)
+            let canConnect = (isReachable && (!needsConnection || canAutoConnect))
+            
+            return canConnect
+        } catch {
+            // If anything goes wrong, assume network is unavailable
+            print("Exception in checkNetworkSafely: \(error)")
             return false
         }
-        
-        var flags: SCNetworkReachabilityFlags = []
-        if !SCNetworkReachabilityGetFlags(reachability, &flags) {
-            return false
-        }
-        
-        // A very defensive check for actual connectivity
-        let isReachable = flags.contains(.reachable)
-        let needsConnection = flags.contains(.connectionRequired)
-        let canAutoConnect = flags.contains(.connectionOnDemand) || flags.contains(.connectionOnTraffic)
-        let canConnect = (isReachable && (!needsConnection || canAutoConnect))
-        
-        return canConnect
     }
-    
+
     // Very safe latency measurement with no throwing/exceptions
     private func measureLatencySafely() {
         // Don't start a new measurement if one is in progress
@@ -630,7 +647,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             
             DispatchQueue.main.async {
-                if error != nil {
+                if (error != nil) {
                     self.currentLatency = -1
                 } else if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                     let elapsed = Date().timeIntervalSince(startTime) * 1000
@@ -678,6 +695,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let text = NSMutableAttributedString()
         
+        // Always show current mode
+        let modeLabel = showMaxSpeed ? "[max] " : "[live] "
+        text.append(NSAttributedString(string: modeLabel, attributes: attrs))
+        
+        if showMaxSpeed {
+            text.append(NSAttributedString(string: "max:", attributes: attrs))
+        }
+        
+        text.append(NSAttributedString(
+            string: String(format: "%6.1f", down),
+            attributes: attrs
+        ))
+        text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+        text.append(NSAttributedString(
+            string: String(format: "%6.1f", up),
+            attributes: attrs
+        ))
+        text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+        
         // Show latency if enabled
         if showLatency {
             if currentLatency < 0 {
@@ -694,27 +730,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 ))
             }
         }
-        
-        // Always show current mode
-        let modeLabel = showMaxSpeed ? "[max] " : "[live] "
-        text.append(NSAttributedString(string: modeLabel, attributes: attrs))
-        
-        if !isTestingSpeed {
-            if showMaxSpeed {
-                text.append(NSAttributedString(string: "max:", attributes: attrs))
-            }
-        }
-        
-        text.append(NSAttributedString(
-            string: String(format: "%6.1f", down),
-            attributes: attrs
-        ))
-        text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
-        text.append(NSAttributedString(
-            string: String(format: "%6.1f", up),
-            attributes: attrs
-        ))
-        text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
         
         button.attributedTitle = text
     }
