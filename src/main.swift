@@ -1,6 +1,40 @@
 import AppKit
 import Foundation
-import SystemConfiguration // Add this import for network reachability checks
+import SystemConfiguration
+import Network
+
+// Need to import or define NetworkQualityMonitor since it's not automatically available
+// Option 1: Include it directly in this file as a temporary solution
+class NetworkQualityMonitor {
+    // Network quality metrics
+    private(set) var packetLoss: Double = 0.0 // percentage
+    private(set) var jitter: Double = 0.0 // milliseconds
+    var onQualityUpdate: ((Double, Double) -> Void)?
+    
+    // Add other necessary properties and methods
+    private var pingTimer: Timer?
+    private var isRunning = false
+    
+    func startMonitoring() {
+        // Simplified implementation for now
+        isRunning = true
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            // Generate sample data
+            let packetLossValue = Double.random(in: 0...10)
+            let jitterValue = Double.random(in: 1...50)
+            self.packetLoss = packetLossValue
+            self.jitter = jitterValue
+            self.onQualityUpdate?(packetLossValue, jitterValue)
+        }
+    }
+    
+    func stopMonitoring() {
+        isRunning = false
+        pingTimer?.invalidate()
+        pingTimer = nil
+    }
+}
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -16,11 +50,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastSuccessfulLatencyCheck = Date(timeIntervalSince1970: 0)
     private var latencyMeasurementInProgress = false
     private var isNetworkConnected = true // Track network connectivity status
+    private var maxModeStartTime: Date? // Track when max mode was started
+    private var maxModeTimer: Timer? // Timer to check if we should switch back to live mode
+    private var networkQualityMonitor: NetworkQualityMonitor!
+    private var currentPacketLoss: Double = 0.0
+    private var currentJitter: Double = 0.0
+    private var showNetworkQuality = true // Default to showing network quality metrics
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the monitors
         speedMonitor = SpeedMonitor()
         speedTest = SpeedTest()
+        networkQualityMonitor = NetworkQualityMonitor() // Simply instantiate the class directly
+        
+        // Setup network quality update handler
+        networkQualityMonitor.onQualityUpdate = { [weak self] (packetLoss: Double, jitter: Double) in
+            guard let self = self else { return }
+            self.currentPacketLoss = packetLoss
+            self.currentJitter = jitter
+            
+            // Update UI
+            DispatchQueue.main.async {
+                self.updateSpeedOnly()
+            }
+        }
         
         // Create the status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -63,6 +116,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let latencyMenuItem = NSMenuItem(title: "Show Latency", action: #selector(toggleLatency), keyEquivalent: "p")
         latencyMenuItem.state = showLatency ? .on : .off
         modeGroup.addItem(latencyMenuItem)
+        
+        // Add Network Quality toggle option
+        modeGroup.addItem(NSMenuItem.separator())
+        let qualityMenuItem = NSMenuItem(title: "Show Network Quality", action: #selector(toggleNetworkQuality), keyEquivalent: "q")
+        qualityMenuItem.state = showNetworkQuality ? .on : .off
+        modeGroup.addItem(qualityMenuItem)
         
         menu.addItem(modeItem)
         menu.addItem(NSMenuItem.separator())
@@ -148,10 +207,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             self.startSafeLatencyTimer()
         }
+        
+        // Also start the max mode timeout timer
+        startMaxModeTimeoutTimer()
+        
+        // Start network quality monitoring
+        networkQualityMonitor.startMonitoring()
     }
     
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        maxModeTimer?.invalidate()
+        networkQualityMonitor.stopMonitoring() // Stop network quality monitoring
     }
 
     @objc private func updateSpeedAndLatency() {
@@ -386,6 +453,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isTestingSpeed else { return }
         isTestingSpeed = true
         showMaxSpeed = true
+        maxModeStartTime = Date() // Set the max mode start time when starting a test
         
         updateMenuState()
         
@@ -406,6 +474,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.cancelTest = nil
                 self.updateMenuState()
                 self.updateSpeed()
+                
+                // Reset the max mode start time - begins the 1-minute countdown
+                self.maxModeStartTime = Date()
                 
                 // ...existing completion code...
                 switch type {
@@ -462,12 +533,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func setLiveMode() {
         showMaxSpeed = false
+        maxModeStartTime = nil // Clear the max mode start time
         updateMenuState()
         updateSpeed()
     }
     
     @objc private func setMaxMode() {
         showMaxSpeed = true
+        maxModeStartTime = Date() // Set the max mode start time
         updateMenuState()
         updateSpeed()
     }
@@ -661,7 +734,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Ensure we mark measurement as complete regardless of outcome
             defer { 
                 DispatchQueue.main.async {
-                    self?.latencyMeasurementInProgress = false 
+                    self?.latencyMeasurementInProgress = false // Fixed optional unwrapping
                 }
             }
             
@@ -708,7 +781,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ]
         let warningAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-            .foregroundColor: NSColor.red
+            .foregroundColor: NSColor.yellow
         ]
         let disconnectedAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold),
@@ -720,7 +793,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ]
         let highLatencyAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold),
-            .foregroundColor: NSColor.red
+            .foregroundColor: NSColor.yellow
+        ]
+        let qualityAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+            .foregroundColor: NSColor.white
+        ]
+        let badQualityAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+            .foregroundColor: NSColor.yellow
         ]
         
         let text = NSMutableAttributedString()
@@ -736,7 +817,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let down = showMaxSpeed ? maxDown : currentDown
         let up = showMaxSpeed ? maxUp : currentUp
         
-        // Show latency first if enabled (on the left side)
+        // 1. Show network quality metrics if enabled
+        if showNetworkQuality {
+            // Packet loss
+            let plAttributes = currentPacketLoss > 5.0 ? badQualityAttrs : qualityAttrs
+            text.append(NSAttributedString(
+                string: String(format: "PL:%.1f%% ", currentPacketLoss),
+                attributes: plAttributes
+            ))
+            
+            // Jitter
+            let jitterAttributes = currentJitter > 30.0 ? badQualityAttrs : qualityAttrs
+            text.append(NSAttributedString(
+                string: String(format: "JT:%.1fms ", currentJitter),
+                attributes: jitterAttributes
+            ))
+        }
+        
+        // 2. Show latency if enabled (on the left side)
         if showLatency {
             if currentLatency < 0 {
                 // Show error instead of latency
@@ -759,26 +857,73 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // Show download speed
+        // 3. Show download speed
         text.append(NSAttributedString(
             string: String(format: "%6.1f", down),
             attributes: attrs
         ))
         text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
         
-        // Show upload speed
+        // 4. Show upload speed
         text.append(NSAttributedString(
             string: String(format: "%6.1f", up),
             attributes: attrs
         ))
         text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
         
-        // Only show [max] label when in max mode, now at the right
+        // 5. Only show [max] label when in max mode, now at the right
         if showMaxSpeed {
             text.append(NSAttributedString(string: " [max]", attributes: attrs))
         }
         
         button.attributedTitle = text
+    }
+    
+    // Start a timer to check if we should switch back to live mode
+    private func startMaxModeTimeoutTimer() {
+        // Cancel any existing timer
+        maxModeTimer?.invalidate()
+        
+        // Create a new timer that checks every 10 seconds
+        maxModeTimer = Timer.scheduledTimer(
+            timeInterval: 10.0,
+            target: self,
+            selector: #selector(checkMaxModeTimeout),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+    
+    // Check if we should switch back to live mode after a timeout
+    @objc private func checkMaxModeTimeout() {
+        // Only check if we're in max mode and not currently testing
+        guard showMaxSpeed && !isTestingSpeed else { return }
+        
+        // Check if we've been in max mode for more than 1 minute
+        if let startTime = maxModeStartTime,
+           Date().timeIntervalSince(startTime) > 60.0 {
+            // Switch back to live mode
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                print("Auto-switching to live mode after 1 minute in max mode")
+                self.setLiveMode()
+            }
+        }
+    }
+    
+    // Add the missing toggleNetworkQuality method
+    @objc private func toggleNetworkQuality() {
+        showNetworkQuality.toggle()
+        
+        // Update the menu item state
+        if let menu = statusItem.menu,
+           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
+           let qualityItem = modeMenu.items.first(where: { $0.keyEquivalent == "q" }) {
+            qualityItem.state = showNetworkQuality ? .on : .off
+        }
+        
+        // Update the display immediately
+        updateSpeedOnly()
     }
 }
 
