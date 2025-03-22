@@ -5,6 +5,7 @@ mkdir -p build
 
 # Compile the Swift files into a macOS application
 swiftc -o build/NetworkSpeedMonitor \
+    src/NetworkQualityMonitor.swift \
     src/SpeedMonitor.swift \
     src/SpeedTest.swift \
     src/main.swift \

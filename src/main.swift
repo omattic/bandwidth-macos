@@ -3,39 +3,6 @@ import Foundation
 import SystemConfiguration
 import Network
 
-// Need to import or define NetworkQualityMonitor since it's not automatically available
-// Option 1: Include it directly in this file as a temporary solution
-class NetworkQualityMonitor {
-    // Network quality metrics
-    private(set) var packetLoss: Double = 0.0 // percentage
-    private(set) var jitter: Double = 0.0 // milliseconds
-    var onQualityUpdate: ((Double, Double) -> Void)?
-    
-    // Add other necessary properties and methods
-    private var pingTimer: Timer?
-    private var isRunning = false
-    
-    func startMonitoring() {
-        // Simplified implementation for now
-        isRunning = true
-        pingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            // Generate sample data
-            let packetLossValue = Double.random(in: 0...10)
-            let jitterValue = Double.random(in: 1...50)
-            self.packetLoss = packetLossValue
-            self.jitter = jitterValue
-            self.onQualityUpdate?(packetLossValue, jitterValue)
-        }
-    }
-    
-    func stopMonitoring() {
-        isRunning = false
-        pingTimer?.invalidate()
-        pingTimer = nil
-    }
-}
-
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var speedMonitor: SpeedMonitor!
@@ -56,18 +23,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentPacketLoss: Double = 0.0
     private var currentJitter: Double = 0.0
     private var showNetworkQuality = true // Default to showing network quality metrics
-    private var showPacketLoss = false // Default to not showing packet loss
-    private var showJitter = false // Default to not showing jitter
+    private var showPacketLoss = true // Default to not showing packet loss
+    private var showJitter = true // Default to not showing jitter
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the monitors
         speedMonitor = SpeedMonitor()
         speedTest = SpeedTest()
-        networkQualityMonitor = NetworkQualityMonitor() // Simply instantiate the class directly
+        networkQualityMonitor = NetworkQualityMonitor() // Use the real implementation
         
         // Setup network quality update handler
         networkQualityMonitor.onQualityUpdate = { [weak self] (packetLoss: Double, jitter: Double) in
             guard let self = self else { return }
+            print("📊 Network quality update: Loss=\(packetLoss)%, Jitter=\(jitter)ms")
             self.currentPacketLoss = packetLoss
             self.currentJitter = jitter
             
@@ -218,6 +186,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         startMaxModeTimeoutTimer()
         
         // Start network quality monitoring
+        print("📱 Starting network quality monitoring")
         networkQualityMonitor.startMonitoring()
     }
     
@@ -823,20 +792,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let down = showMaxSpeed ? maxDown : currentDown
         let up = showMaxSpeed ? maxUp : currentUp
         
-        // Show packet loss if enabled
+        // Show packet loss if enabled - with improved formatting and debugging
         if showPacketLoss {
-            let plAttributes = currentPacketLoss > 5.0 ? badQualityAttrs : qualityAttrs
+            print("📊 Displaying packet loss: \(currentPacketLoss)%")
+            
+            // Use different colors based on severity
+            var plAttributes = qualityAttrs
+            if currentPacketLoss > 10.0 {
+                plAttributes = badQualityAttrs
+            } else if currentPacketLoss > 5.0 {
+                plAttributes = warningAttrs
+            }
+            
             text.append(NSAttributedString(
-                string: String(format: "PL:%.1f%% ", currentPacketLoss),
+                string: String(format: "L%.1f%% ", currentPacketLoss),
                 attributes: plAttributes
             ))
         }
         
-        // Show jitter if enabled
+        // Show jitter if enabled - with improved formatting and debugging
         if showJitter {
-            let jitterAttributes = currentJitter > 50.0 ? badQualityAttrs : qualityAttrs
+            print("📊 Displaying jitter: \(currentJitter)ms")
+            
+            // Use different colors based on severity
+            var jitterAttributes = qualityAttrs
+            if currentJitter > 50.0 {
+                jitterAttributes = badQualityAttrs
+            } else if currentJitter > 20.0 {
+                jitterAttributes = warningAttrs
+            }
+            
             text.append(NSAttributedString(
-                string: String(format: "JT:%.1fms ", currentJitter),
+                string: String(format: "J%.1f ", currentJitter),
                 attributes: jitterAttributes
             ))
         }
