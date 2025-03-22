@@ -8,11 +8,18 @@ class NetworkQualityMonitor {
     private var monitorTimer: Timer?
     private var isMonitoring = false
     private let pingHost = "www.apple.com"
-    private let pingInterval: TimeInterval = 10.0
+    // Reduce the ping interval for more frequent updates
+    private let pingInterval: TimeInterval = 5.0
     
     // Reference values for packet loss and jitter calculations
     private var packetsSent = 0
     private var packetsReceived = 0
+    
+    // Add sliding window structures for more responsive measurements
+    private var recentResults: [(sent: Bool, timestamp: Date)] = []
+    private let windowSize = 20 // Keep track of last 20 ping attempts
+    private let recentWindowSize = 5 // Give more weight to the most recent pings
+    
     private var pingTimes: [TimeInterval] = []
     private let maxPingTimesToKeep = 10
     
@@ -38,6 +45,11 @@ class NetworkQualityMonitor {
         
         guard !isMonitoring else { return }
         isMonitoring = true
+        
+        // Clear any existing measurements for a fresh start
+        recentResults.removeAll()
+        packetsSent = 0
+        packetsReceived = 0
         
         // Use DispatchSourceTimer instead of Timer for better reliability
         DispatchQueue.main.async { [weak self] in
@@ -106,6 +118,13 @@ class NetworkQualityMonitor {
         // Thread-safe increment
         lock.lock()
         packetsSent += 1
+        // Add this attempt to our recent results
+        recentResults.append((sent: true, timestamp: Date()))
+        
+        // Maintain the sliding window size
+        if recentResults.count > windowSize {
+            recentResults.removeFirst()
+        }
         lock.unlock()
         
         // Configure session for quick ping
@@ -120,11 +139,18 @@ class NetworkQualityMonitor {
             // Verify we're still monitoring
             guard self.isMonitoring else { return }
             
+            self.lock.lock()
+            
             if error == nil, let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 // Successful ping - thread-safe updates
-                self.lock.lock()
-                
                 self.packetsReceived += 1
+                
+                // Update the most recent ping attempt as successful
+                if let lastIndex = self.recentResults.indices.last {
+                    // Mark as received
+                    let timestamp = self.recentResults[lastIndex].timestamp
+                    self.recentResults[lastIndex] = (sent: false, timestamp: timestamp)
+                }
                 
                 // Calculate ping time
                 let pingTime = Date().timeIntervalSince(startTime) * 1000 // in ms
@@ -136,53 +162,34 @@ class NetworkQualityMonitor {
                 if self.pingTimes.count > self.maxPingTimesToKeep {
                     self.pingTimes.removeFirst()
                 }
-                
-                // Calculate packet loss percentage
-                let packetLoss = self.packetsSent > 0 ? 
-                    min(Double(self.packetsSent - self.packetsReceived) / Double(self.packetsSent) * 100.0, 100.0) : 0.0
-                
-                // Calculate jitter (variation in ping times)
-                let jitter = self.calculateJitter()
-                
-                // Reset counters after a while to ensure we're measuring recent performance
-                if self.packetsSent > 50 {
-                    self.packetsSent = max(self.packetsSent / 2, 1)
-                    self.packetsReceived = max(self.packetsReceived / 2, 0)
-                }
-                
-                // Release lock before UI callback
-                self.lock.unlock()
-                
-                // Notify listeners with safe values
-                let safeLoss = min(max(packetLoss, 0.0), 100.0)
-                let safeJitter = max(jitter, 0.0)
-                
-                // Switch to main thread for UI updates
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self, self.isMonitoring else { return }
-                    self.onQualityUpdate?(safeLoss, safeJitter)
-                }
             } else {
-                // Failed ping - this counts as packet loss
-                self.lock.lock()
-                
-                // Calculate packet loss percentage
-                let packetLoss = self.packetsSent > 0 ? 
-                    min(Double(self.packetsSent - self.packetsReceived) / Double(self.packetsSent) * 100.0, 100.0) : 0.0
-                
-                // Calculate jitter with the existing data
-                let jitter = self.calculateJitter()
-                
-                self.lock.unlock()
-                
-                // Notify listeners with safe values
-                let safeLoss = min(max(packetLoss, 0.0), 100.0)
-                let safeJitter = max(jitter, 0.0)
-                
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self, self.isMonitoring else { return }
-                    self.onQualityUpdate?(safeLoss, safeJitter)
-                }
+                // Failed ping - leave the entry as sent but not received
+                // The lastIndex is already marked as sent=true
+            }
+            
+            // Calculate packet loss with recent bias
+            let packetLoss = self.calculatePacketLoss()
+            
+            // Calculate jitter (variation in ping times)
+            let jitter = self.calculateJitter()
+            
+            // Reset counters more frequently to be more responsive to changes
+            if self.packetsSent > 30 {
+                self.packetsSent = max(self.packetsSent / 2, 1)
+                self.packetsReceived = max(self.packetsReceived / 2, 0)
+            }
+            
+            // Release lock before UI callback
+            self.lock.unlock()
+            
+            // Notify listeners with safe values
+            let safeLoss = min(max(packetLoss, 0.0), 100.0)
+            let safeJitter = max(jitter, 0.0)
+            
+            // Switch to main thread for UI updates
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.isMonitoring else { return }
+                self.onQualityUpdate?(safeLoss, safeJitter)
             }
         }
         
@@ -192,6 +199,35 @@ class NetworkQualityMonitor {
         } catch {
             print("Network quality monitoring error: \(error.localizedDescription)")
         }
+    }
+    
+    // New method for more responsive packet loss calculation
+    private func calculatePacketLoss() -> Double {
+        // If we don't have enough data yet, use the traditional method
+        if recentResults.count < 3 {
+            return packetsSent > 0 ? 
+                min(Double(packetsSent - packetsReceived) / Double(packetsSent) * 100.0, 100.0) : 0.0
+        }
+        
+        // Calculate loss using sliding window with bias toward recent results
+        
+        // First get the overall window packet loss
+        let lostPackets = recentResults.filter { $0.sent }.count - packetsReceived
+        let windowLoss = recentResults.count > 0 ? 
+            Double(lostPackets) / Double(recentResults.count) * 100.0 : 0.0
+        
+        // Then calculate recent window packet loss (more weight to recent packets)
+        let recentWindow = recentResults.suffix(min(recentWindowSize, recentResults.count))
+        let recentLostPackets = recentWindow.filter { $0.sent }.count - 
+                               recentWindow.filter { !$0.sent }.count
+        let recentLoss = recentWindow.count > 0 ? 
+            Double(recentLostPackets) / Double(recentWindow.count) * 100.0 : 0.0
+        
+        // Combine with bias toward recent measurements (70% recent, 30% overall)
+        let weightedLoss = (recentLoss * 0.7) + (windowLoss * 0.3)
+        
+        // Ensure the value is in valid range
+        return min(max(weightedLoss, 0.0), 100.0)
     }
     
     private func calculateJitter() -> Double {
