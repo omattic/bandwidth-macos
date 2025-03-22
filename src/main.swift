@@ -3,6 +3,15 @@ import Foundation
 import SystemConfiguration
 import Network
 
+// Add preference keys
+struct PreferenceKeys {
+    static let showMaxSpeed = "showMaxSpeed"
+    static let showLatency = "showLatency"
+    static let showPacketLoss = "showPacketLoss"
+    static let showJitter = "showJitter"
+    static let showNetworkQuality = "showNetworkQuality"
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var speedMonitor: SpeedMonitor!
@@ -27,6 +36,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var showJitter = true // Default to showing jitter
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Load user preferences first
+        loadPreferences()
+        
         // Create the monitors with more defensive approach
         speedMonitor = SpeedMonitor()
         speedTest = SpeedTest()
@@ -209,6 +221,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    // Load user preferences from UserDefaults
+    private func loadPreferences() {
+        let defaults = UserDefaults.standard
+        
+        // Load display preferences with fallback to default values
+        showMaxSpeed = defaults.bool(forKey: PreferenceKeys.showMaxSpeed)
+        showLatency = defaults.object(forKey: PreferenceKeys.showLatency) as? Bool ?? true
+        showPacketLoss = defaults.object(forKey: PreferenceKeys.showPacketLoss) as? Bool ?? true
+        showJitter = defaults.object(forKey: PreferenceKeys.showJitter) as? Bool ?? true
+        showNetworkQuality = defaults.object(forKey: PreferenceKeys.showNetworkQuality) as? Bool ?? true
+        
+        print("📋 Loaded preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter)")
+    }
+    
+    // Save current preferences to UserDefaults
+    private func savePreferences() {
+        let defaults = UserDefaults.standard
+        
+        defaults.set(showMaxSpeed, forKey: PreferenceKeys.showMaxSpeed)
+        defaults.set(showLatency, forKey: PreferenceKeys.showLatency)
+        defaults.set(showPacketLoss, forKey: PreferenceKeys.showPacketLoss)
+        defaults.set(showJitter, forKey: PreferenceKeys.showJitter)
+        defaults.set(showNetworkQuality, forKey: PreferenceKeys.showNetworkQuality)
+        
+        // Synchronize to ensure data is saved immediately
+        defaults.synchronize()
+        
+        print("💾 Saved preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter)")
+    }
+    
     // Start a timer to check if we should switch back to live mode
     private func startMaxModeTimeoutTimer() {
         // Cancel any existing timer
@@ -254,6 +296,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Update the display immediately
         updateSpeedOnly()
+        savePreferences() // Save the new preference
     }
     
     // Add toggle methods for packet loss and jitter
@@ -269,6 +312,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Update the display immediately
         updateSpeedOnly()
+        savePreferences() // Save the new preference
     }
     
     @objc private func toggleJitter() {
@@ -283,9 +327,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Update the display immediately
         updateSpeedOnly()
+        savePreferences() // Save the new preference
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        // Save preferences before termination
+        savePreferences()
+        
         // Cleanup all resources and timers
         timer?.invalidate()
         timer = nil
@@ -437,6 +485,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        
+        savePreferences() // Save the new preference
     }
     
     @objc private func toggleMode() {
@@ -614,6 +664,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         maxModeStartTime = nil // Clear the max mode start time
         updateMenuState()
         updateSpeed()
+        savePreferences() // Save the new preference
     }
     
     @objc private func setMaxMode() {
@@ -621,6 +672,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         maxModeStartTime = Date() // Set the max mode start time
         updateMenuState()
         updateSpeed()
+        savePreferences() // Save the new preference
     }
     
     @objc private func cancelCurrentTest() {

@@ -3,6 +3,11 @@
 echo "Compiling Swift files..."
 mkdir -p build
 
+# Register default preferences if needed
+defaults write com.carlos.networkspeedmonitor showLatency -bool true
+defaults write com.carlos.networkspeedmonitor showPacketLoss -bool true
+defaults write com.carlos.networkspeedmonitor showJitter -bool true
+
 # Compile the Swift files into a macOS application
 swiftc -o build/NetworkSpeedMonitor \
     src/NetworkQualityMonitor.swift \
@@ -11,12 +16,6 @@ swiftc -o build/NetworkSpeedMonitor \
     src/main.swift \
     -framework AppKit # \
     # -enable-hardened-runtime
-
-# Sign the application with entitlements
-# codesign --force --sign - \
-#     --entitlements NetworkSpeedMonitor.entitlements \
-#     --options runtime \
-#     build/NetworkSpeedMonitor
 
 # Check if compilation and signing were successful
 if [ $? -eq 0 ]; then
