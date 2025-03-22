@@ -23,25 +23,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentPacketLoss: Double = 0.0
     private var currentJitter: Double = 0.0
     private var showNetworkQuality = true // Default to showing network quality metrics
-    private var showPacketLoss = true // Default to not showing packet loss
-    private var showJitter = true // Default to not showing jitter
+    private var showPacketLoss = true // Default to showing packet loss
+    private var showJitter = true // Default to showing jitter
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Create the monitors
+        // Create the monitors with more defensive approach
         speedMonitor = SpeedMonitor()
         speedTest = SpeedTest()
-        networkQualityMonitor = NetworkQualityMonitor() // Use the real implementation
         
-        // Setup network quality update handler
+        // Use safe instantiation for NetworkQualityMonitor
+        networkQualityMonitor = NetworkQualityMonitor()
+        
+        // Setup network quality update handler with additional safety
         networkQualityMonitor.onQualityUpdate = { [weak self] (packetLoss: Double, jitter: Double) in
             guard let self = self else { return }
-            print("📊 Network quality update: Loss=\(packetLoss)%, Jitter=\(jitter)ms")
-            self.currentPacketLoss = packetLoss
-            self.currentJitter = jitter
             
-            // Update UI
-            DispatchQueue.main.async {
+            // Ensure values are in safe ranges
+            let safeLoss = min(max(packetLoss, 0.0), 100.0)
+            let safeJitter = max(jitter, 0.0)
+            
+            // Limit debug printing frequency to reduce console spam
+            if Int(safeLoss * 10) % 10 == 0 || Int(safeJitter * 10) % 10 == 0 {
+                print("📊 Network quality update: Loss=\(safeLoss)%, Jitter=\(safeJitter)ms")
+            }
+            
+            // Update stored values atomically
+            self.currentPacketLoss = safeLoss
+            self.currentJitter = safeJitter
+            
+            // Update UI only from main thread
+            if Thread.isMainThread {
                 self.updateSpeedOnly()
+            } else {
+                DispatchQueue.main.async {
+                    self.updateSpeedOnly()
+                }
             }
         }
         
@@ -87,7 +103,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         latencyMenuItem.state = showLatency ? .on : .off
         modeGroup.addItem(latencyMenuItem)
         
-        // Add Packet Loss toggle option - change keyEquivalent to "k" instead of "l" to avoid conflict
+        // Add Packet Loss toggle option with fixed key equivalent
         let packetLossMenuItem = NSMenuItem(title: "Show Packet Loss", action: #selector(togglePacketLoss), keyEquivalent: "k")
         packetLossMenuItem.state = showPacketLoss ? .on : .off
         modeGroup.addItem(packetLossMenuItem)
@@ -185,15 +201,102 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Also start the max mode timeout timer
         startMaxModeTimeoutTimer()
         
-        // Start network quality monitoring
+        // Start network quality monitoring with a delay
         print("📱 Starting network quality monitoring")
-        networkQualityMonitor.startMonitoring()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            guard let self = self else { return }
+            self.networkQualityMonitor.startMonitoring()
+        }
+    }
+    
+    // Start a timer to check if we should switch back to live mode
+    private func startMaxModeTimeoutTimer() {
+        // Cancel any existing timer
+        maxModeTimer?.invalidate()
+        
+        // Create a new timer that checks every 10 seconds
+        maxModeTimer = Timer.scheduledTimer(
+            timeInterval: 10.0,
+            target: self,
+            selector: #selector(checkMaxModeTimeout),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+    
+    // Check if we should switch back to live mode after a timeout
+    @objc private func checkMaxModeTimeout() {
+        // Only check if we're in max mode and not currently testing
+        guard showMaxSpeed && !isTestingSpeed else { return }
+        
+        // Check if we've been in max mode for more than 1 minute
+        if let startTime = maxModeStartTime,
+           Date().timeIntervalSince(startTime) > 60.0 {
+            // Switch back to live mode
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                print("Auto-switching to live mode after 1 minute in max mode")
+                self.setLiveMode()
+            }
+        }
+    }
+    
+    // Toggle methods for network quality display
+    @objc private func toggleNetworkQuality() {
+        showNetworkQuality.toggle()
+        
+        // Update the menu item state
+        if let menu = statusItem.menu,
+           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
+           let qualityItem = modeMenu.items.first(where: { $0.keyEquivalent == "q" }) {
+            qualityItem.state = showNetworkQuality ? .on : .off
+        }
+        
+        // Update the display immediately
+        updateSpeedOnly()
+    }
+    
+    // Add toggle methods for packet loss and jitter
+    @objc private func togglePacketLoss() {
+        showPacketLoss.toggle()
+        
+        // Update the menu item state - fix the key equivalent to match the new one
+        if let menu = statusItem.menu,
+           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
+           let packetLossItem = modeMenu.items.first(where: { $0.keyEquivalent == "k" }) {
+            packetLossItem.state = showPacketLoss ? .on : .off
+        }
+        
+        // Update the display immediately
+        updateSpeedOnly()
+    }
+    
+    @objc private func toggleJitter() {
+        showJitter.toggle()
+        
+        // Update the menu item state
+        if let menu = statusItem.menu,
+           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
+           let jitterItem = modeMenu.items.first(where: { $0.keyEquivalent == "j" }) {
+            jitterItem.state = showJitter ? .on : .off
+        }
+        
+        // Update the display immediately
+        updateSpeedOnly()
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        // Cleanup all resources and timers
         timer?.invalidate()
+        timer = nil
+        
         maxModeTimer?.invalidate()
-        networkQualityMonitor.stopMonitoring() // Stop network quality monitoring
+        maxModeTimer = nil
+        
+        // Stop network monitoring safely
+        DispatchQueue.main.async { [weak self] in
+            self?.networkQualityMonitor.stopMonitoring()
+        }
     }
 
     @objc private func updateSpeedAndLatency() {
@@ -709,7 +812,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Ensure we mark measurement as complete regardless of outcome
             defer { 
                 DispatchQueue.main.async {
-                    self?.latencyMeasurementInProgress = false // Fixed optional unwrapping
+                    self?.latencyMeasurementInProgress = false
                 }
             }
             
@@ -794,36 +897,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Show packet loss if enabled - with improved formatting and debugging
         if showPacketLoss {
-            print("📊 Displaying packet loss: \(currentPacketLoss)%")
+            // Limit debug printing to reduce potential performance issues
+            if Int(currentPacketLoss * 10) % 50 == 0 {
+                print("📊 Displaying packet loss: \(currentPacketLoss)%")
+            }
+            
+            // Ensure valid value range
+            let safeLoss = min(max(currentPacketLoss, 0.0), 100.0)
             
             // Use different colors based on severity
             var plAttributes = qualityAttrs
-            if currentPacketLoss > 10.0 {
+            if safeLoss > 10.0 {
                 plAttributes = badQualityAttrs
-            } else if currentPacketLoss > 5.0 {
+            } else if safeLoss > 5.0 {
                 plAttributes = warningAttrs
             }
             
             text.append(NSAttributedString(
-                string: String(format: "L%.1f%% ", currentPacketLoss),
+                string: String(format: "L%.1f%% ", safeLoss),
                 attributes: plAttributes
             ))
         }
         
         // Show jitter if enabled - with improved formatting and debugging
         if showJitter {
-            print("📊 Displaying jitter: \(currentJitter)ms")
+            // Limit debug printing
+            if Int(currentJitter * 10) % 50 == 0 {
+                print("📊 Displaying jitter: \(currentJitter)ms")
+            }
+            
+            // Ensure valid value range
+            let safeJitter = max(currentJitter, 0.0)
             
             // Use different colors based on severity
             var jitterAttributes = qualityAttrs
-            if currentJitter > 50.0 {
+            if safeJitter > 50.0 {
                 jitterAttributes = badQualityAttrs
-            } else if currentJitter > 20.0 {
+            } else if safeJitter > 20.0 {
                 jitterAttributes = warningAttrs
             }
             
             text.append(NSAttributedString(
-                string: String(format: "J%.1f ", currentJitter),
+                string: String(format: "J%.1f ", safeJitter),
                 attributes: jitterAttributes
             ))
         }
@@ -833,7 +948,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if currentLatency < 0 {
                 // Show error instead of latency
                 text.append(NSAttributedString(
-                    string: "∞ ms",
+                    string: "∞ ms ",
                     attributes: warningAttrs
                 ))
             } else if currentLatency > 1000 {
@@ -871,82 +986,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         button.attributedTitle = text
-    }
-    
-    // Start a timer to check if we should switch back to live mode
-    private func startMaxModeTimeoutTimer() {
-        // Cancel any existing timer
-        maxModeTimer?.invalidate()
-        
-        // Create a new timer that checks every 10 seconds
-        maxModeTimer = Timer.scheduledTimer(
-            timeInterval: 10.0,
-            target: self,
-            selector: #selector(checkMaxModeTimeout),
-            userInfo: nil,
-            repeats: true
-        )
-    }
-    
-    // Check if we should switch back to live mode after a timeout
-    @objc private func checkMaxModeTimeout() {
-        // Only check if we're in max mode and not currently testing
-        guard showMaxSpeed && !isTestingSpeed else { return }
-        
-        // Check if we've been in max mode for more than 1 minute
-        if let startTime = maxModeStartTime,
-           Date().timeIntervalSince(startTime) > 60.0 {
-            // Switch back to live mode
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                print("Auto-switching to live mode after 1 minute in max mode")
-                self.setLiveMode()
-            }
-        }
-    }
-    
-    // Add the missing toggleNetworkQuality method
-    @objc private func toggleNetworkQuality() {
-        showNetworkQuality.toggle()
-        
-        // Update the menu item state
-        if let menu = statusItem.menu,
-           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
-           let qualityItem = modeMenu.items.first(where: { $0.keyEquivalent == "q" }) {
-            qualityItem.state = showNetworkQuality ? .on : .off
-        }
-        
-        // Update the display immediately
-        updateSpeedOnly()
-    }
-    
-    // Add toggle methods for packet loss and jitter
-    @objc private func togglePacketLoss() {
-        showPacketLoss.toggle()
-        
-        // Update the menu item state - fix the key equivalent to match the new one
-        if let menu = statusItem.menu,
-           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
-           let packetLossItem = modeMenu.items.first(where: { $0.keyEquivalent == "k" }) {
-            packetLossItem.state = showPacketLoss ? .on : .off
-        }
-        
-        // Update the display immediately
-        updateSpeedOnly()
-    }
-    
-    @objc private func toggleJitter() {
-        showJitter.toggle()
-        
-        // Update the menu item state
-        if let menu = statusItem.menu,
-           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
-           let jitterItem = modeMenu.items.first(where: { $0.keyEquivalent == "j" }) {
-            jitterItem.state = showJitter ? .on : .off
-        }
-        
-        // Update the display immediately
-        updateSpeedOnly()
     }
 }
 
