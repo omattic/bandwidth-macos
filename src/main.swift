@@ -56,6 +56,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentPacketLoss: Double = 0.0
     private var currentJitter: Double = 0.0
     private var showNetworkQuality = true // Default to showing network quality metrics
+    private var showPacketLoss = false // Default to not showing packet loss
+    private var showJitter = false // Default to not showing jitter
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the monitors
@@ -117,11 +119,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         latencyMenuItem.state = showLatency ? .on : .off
         modeGroup.addItem(latencyMenuItem)
         
-        // Add Network Quality toggle option
-        modeGroup.addItem(NSMenuItem.separator())
-        let qualityMenuItem = NSMenuItem(title: "Show Network Quality", action: #selector(toggleNetworkQuality), keyEquivalent: "q")
-        qualityMenuItem.state = showNetworkQuality ? .on : .off
-        modeGroup.addItem(qualityMenuItem)
+        // Add Packet Loss toggle option - change keyEquivalent to "k" instead of "l" to avoid conflict
+        let packetLossMenuItem = NSMenuItem(title: "Show Packet Loss", action: #selector(togglePacketLoss), keyEquivalent: "k")
+        packetLossMenuItem.state = showPacketLoss ? .on : .off
+        modeGroup.addItem(packetLossMenuItem)
+        
+        // Add Jitter toggle option
+        let jitterMenuItem = NSMenuItem(title: "Show Jitter", action: #selector(toggleJitter), keyEquivalent: "j")
+        jitterMenuItem.state = showJitter ? .on : .off
+        modeGroup.addItem(jitterMenuItem)
         
         menu.addItem(modeItem)
         menu.addItem(NSMenuItem.separator())
@@ -817,24 +823,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let down = showMaxSpeed ? maxDown : currentDown
         let up = showMaxSpeed ? maxUp : currentUp
         
-        // 1. Show network quality metrics if enabled
-        if showNetworkQuality {
-            // Packet loss
+        // Show packet loss if enabled
+        if showPacketLoss {
             let plAttributes = currentPacketLoss > 5.0 ? badQualityAttrs : qualityAttrs
             text.append(NSAttributedString(
                 string: String(format: "PL:%.1f%% ", currentPacketLoss),
                 attributes: plAttributes
             ))
-            
-            // Jitter
-            let jitterAttributes = currentJitter > 30.0 ? badQualityAttrs : qualityAttrs
+        }
+        
+        // Show jitter if enabled
+        if showJitter {
+            let jitterAttributes = currentJitter > 50.0 ? badQualityAttrs : qualityAttrs
             text.append(NSAttributedString(
                 string: String(format: "JT:%.1fms ", currentJitter),
                 attributes: jitterAttributes
             ))
         }
         
-        // 2. Show latency if enabled (on the left side)
+        // Show latency if enabled
         if showLatency {
             if currentLatency < 0 {
                 // Show error instead of latency
@@ -843,7 +850,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     attributes: warningAttrs
                 ))
             } else if currentLatency > 1000 {
-                // Show high latency in red
+                // Show high latency in yellow
                 text.append(NSAttributedString(
                     string: String(format: "%3.0fms ", currentLatency),
                     attributes: highLatencyAttrs
@@ -857,21 +864,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // 3. Show download speed
+        // Show download speed
         text.append(NSAttributedString(
             string: String(format: "%6.1f", down),
             attributes: attrs
         ))
         text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
         
-        // 4. Show upload speed
+        // Show upload speed
         text.append(NSAttributedString(
             string: String(format: "%6.1f", up),
             attributes: attrs
         ))
         text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
         
-        // 5. Only show [max] label when in max mode, now at the right
+        // Only show [max] label when in max mode
         if showMaxSpeed {
             text.append(NSAttributedString(string: " [max]", attributes: attrs))
         }
@@ -920,6 +927,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
            let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
            let qualityItem = modeMenu.items.first(where: { $0.keyEquivalent == "q" }) {
             qualityItem.state = showNetworkQuality ? .on : .off
+        }
+        
+        // Update the display immediately
+        updateSpeedOnly()
+    }
+    
+    // Add toggle methods for packet loss and jitter
+    @objc private func togglePacketLoss() {
+        showPacketLoss.toggle()
+        
+        // Update the menu item state - fix the key equivalent to match the new one
+        if let menu = statusItem.menu,
+           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
+           let packetLossItem = modeMenu.items.first(where: { $0.keyEquivalent == "k" }) {
+            packetLossItem.state = showPacketLoss ? .on : .off
+        }
+        
+        // Update the display immediately
+        updateSpeedOnly()
+    }
+    
+    @objc private func toggleJitter() {
+        showJitter.toggle()
+        
+        // Update the menu item state
+        if let menu = statusItem.menu,
+           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
+           let jitterItem = modeMenu.items.first(where: { $0.keyEquivalent == "j" }) {
+            jitterItem.state = showJitter ? .on : .off
         }
         
         // Update the display immediately

@@ -18,6 +18,7 @@ class NetworkQualityMonitor {
     private var pingLatencies: [TimeInterval] = []
     private var isRunning = false
     private var lastPingTime: Date?
+    private var activeConnections = Set<NWConnection>() // Track active connections to prevent early deallocation
     
     // Endpoint for pings
     private let pingHost = "1.1.1.1" // Cloudflare DNS
@@ -25,6 +26,9 @@ class NetworkQualityMonitor {
     
     // Callbacks for updates
     var onQualityUpdate: ((Double, Double) -> Void)? // packetLoss, jitter
+    
+    // Thread safety
+    private let queue = DispatchQueue(label: "com.networkquality.monitor", qos: .utility)
 
     init() {
         // Initialize empty latency history
@@ -36,25 +40,45 @@ class NetworkQualityMonitor {
     }
     
     func startMonitoring() {
-        guard !isRunning else { return }
-        isRunning = true
-        
-        // Reset metrics
-        resetMetrics()
-        
-        // Start the ping timer
-        pingTimer = Timer.scheduledTimer(withTimeInterval: pingInterval, repeats: true) { [weak self] _ in
-            self?.sendPing()
+        queue.async { [weak self] in
+            guard let self = self, !self.isRunning else { return }
+            self.isRunning = true
+            
+            // Reset metrics
+            self.resetMetrics()
+            
+            // Start the ping timer on the main thread
+            DispatchQueue.main.async {
+                self.pingTimer = Timer.scheduledTimer(withTimeInterval: self.pingInterval, repeats: true) { [weak self] _ in
+                    self?.queue.async {
+                        self?.sendPing()
+                    }
+                }
+                
+                // Send initial ping immediately
+                self.queue.async {
+                    self.sendPing()
+                }
+            }
         }
-        
-        // Send initial ping immediately
-        sendPing()
     }
     
     func stopMonitoring() {
-        isRunning = false
-        pingTimer?.invalidate()
-        pingTimer = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.pingTimer?.invalidate()
+            self?.pingTimer = nil
+        }
+        
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.isRunning = false
+            
+            // Cancel all active connections
+            for connection in self.activeConnections {
+                connection.cancel()
+            }
+            self.activeConnections.removeAll()
+        }
     }
     
     private func resetMetrics() {
@@ -76,44 +100,56 @@ class NetworkQualityMonitor {
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(pingHost), port: NWEndpoint.Port(integerLiteral: UInt16(pingPort)))
         let connection = NWConnection(to: endpoint, using: .tcp)
         
+        // Add to active connections
+        activeConnections.insert(connection)
+        
         // Set up state handler
-        connection.stateUpdateHandler = { [weak self] state in
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
             guard let self = self else { return }
             
-            switch state {
-            case .ready:
-                // Connection established successfully - record this as a successful ping
-                if let sentTime = self.lastPingTime {
-                    let latency = Date().timeIntervalSince(sentTime) * 1000 // convert to ms
-                    self.recordSuccessfulPing(latency: latency)
-                    connection.cancel() // Close the connection after success
+            self.queue.async {
+                switch state {
+                case .ready:
+                    // Connection established successfully - record this as a successful ping
+                    if let sentTime = self.lastPingTime {
+                        let latency = Date().timeIntervalSince(sentTime) * 1000 // convert to ms
+                        self.recordSuccessfulPing(latency: latency)
+                    }
+                    
+                    // Close the connection after success
+                    if let connection = connection {
+                        connection.cancel()
+                        self.activeConnections.remove(connection)
+                    }
+                    
+                case .failed, .cancelled:
+                    // Connection failed - record as packet loss
+                    self.recordFailedPing()
+                    
+                    // Remove from active connections
+                    if let connection = connection {
+                        self.activeConnections.remove(connection)
+                    }
+                    
+                default:
+                    // Other states - waiting for ready or failed
+                    break
                 }
-                
-            case .failed, .cancelled:
-                // Connection failed - record as packet loss
-                self.recordFailedPing()
-                
-            default:
-                // Other states - waiting for ready or failed
-                break
             }
         }
         
-        // Set up receive handler (we don't actually need to receive data)
-        connection.receiveMessage { _, _, isComplete, error in
-            if let error = error {
-                print("Ping receive error: \(error)")
-            }
-        }
-        
-        // Start the connection
-        connection.start(queue: .global())
+        // Start the connection with a specific dispatch queue to avoid blocking
+        connection.start(queue: DispatchQueue.global(qos: .utility))
         
         // Set up a timeout for the ping
-        DispatchQueue.global().asyncAfter(deadline: .now() + pingTimeout) {
+        queue.asyncAfter(deadline: .now() + pingTimeout) { [weak self, weak connection] in
+            guard let self = self, let connection = connection, self.activeConnections.contains(connection) else { return }
+            
             // If the connection is not ready by now, consider it failed
             if connection.state != .ready {
                 connection.cancel()
+                self.activeConnections.remove(connection)
+                self.recordFailedPing()
             }
         }
     }
@@ -159,10 +195,14 @@ class NetworkQualityMonitor {
             jitter = 0.0
         }
         
-        // Notify listeners
+        // Clone the values to avoid any threading issues
+        let currentPacketLoss = packetLoss
+        let currentJitter = jitter
+        
+        // Notify listeners on the main thread
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.onQualityUpdate?(self.packetLoss, self.jitter)
+            guard let self = self, self.isRunning else { return }
+            self.onQualityUpdate?(currentPacketLoss, currentJitter)
         }
     }
 }
