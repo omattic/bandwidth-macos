@@ -193,12 +193,9 @@ class NetworkQualityMonitor {
             }
         }
         
-        // Execute ping with error handling
-        do {
-            task.resume()
-        } catch {
-            print("Network quality monitoring error: \(error.localizedDescription)")
-        }
+        // Execute ping - remove unreachable catch block
+        task.resume()
+        // Handle errors through the completion handler instead
     }
     
     // New method for more responsive packet loss calculation

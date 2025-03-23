@@ -12,6 +12,84 @@ struct PreferenceKeys {
     static let showNetworkQuality = "showNetworkQuality"
 }
 
+// Improved NetworkMonitor with better thread safety and error handling
+class NetworkMonitor {
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "NetworkMonitorQueue")
+    private(set) var isConnected = false
+    private var statusChangeHandler: ((Bool) -> Void)?
+    private let lock = NSLock() // Add thread safety
+    
+    init() {
+        // Start with a safe default value
+        isConnected = false
+        
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self = self else { return }
+            
+            // Thread-safe update of state
+            self.lock.lock()
+            let newConnectionState = path.status == .satisfied
+            let stateChanged = self.isConnected != newConnectionState
+            self.isConnected = newConnectionState
+            self.lock.unlock()
+            
+            // Only notify when there's an actual change
+            if stateChanged {
+                print("📶 Network status changed: \(newConnectionState ? "Connected" : "Disconnected")")
+                
+                // Always dispatch to main thread for UI updates
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    
+                    // Get the handler safely
+                    var handler: ((Bool) -> Void)?
+                    self.lock.lock()
+                    handler = self.statusChangeHandler
+                    self.lock.unlock()
+                    
+                    // Call handler on main thread
+                    handler?(newConnectionState)
+                }
+            }
+        }
+        
+        // Start monitoring on background queue
+        monitor.start(queue: queue)
+    }
+    
+    deinit {
+        stopMonitoring()
+    }
+    
+    func startMonitoring(statusChanged: @escaping (Bool) -> Void) {
+        lock.lock()
+        statusChangeHandler = statusChanged
+        lock.unlock()
+        
+        // Immediately notify with current state
+        DispatchQueue.main.async {
+            statusChanged(self.checkIsConnected())
+        }
+    }
+    
+    func stopMonitoring() {
+        lock.lock()
+        statusChangeHandler = nil
+        lock.unlock()
+        
+        // Cancel the monitor
+        monitor.cancel()
+    }
+    
+    func checkIsConnected() -> Bool {
+        lock.lock()
+        let result = isConnected
+        lock.unlock()
+        return result
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var speedMonitor: SpeedMonitor!
@@ -34,8 +112,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var showNetworkQuality = true // Default to showing network quality metrics
     private var showPacketLoss = true // Default to showing packet loss
     private var showJitter = true // Default to showing jitter
+    private var networkMonitor: NetworkMonitor!
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Move the NetworkMonitor initialization to the top
+        networkMonitor = NetworkMonitor()
+        
         // Load user preferences first
         loadPreferences()
         
@@ -201,7 +283,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Set the latency to error state by default
         currentLatency = -1
         
-        // Start monitoring network status changes - add this to be notified when WiFi turns off/on
+        // Start monitoring network status changes using modern API
         startMonitoringNetworkChanges()
         
         // Schedule a ONE-TIME latency check after delay with safeguards
@@ -334,17 +416,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Save preferences before termination
         savePreferences()
         
-        // Cleanup all resources and timers
+        // Properly cleanup all resources
+        networkMonitor.stopMonitoring() // Stop this first
+        
         timer?.invalidate()
         timer = nil
         
         maxModeTimer?.invalidate()
         maxModeTimer = nil
         
-        // Stop network monitoring safely
-        DispatchQueue.main.async { [weak self] in
-            self?.networkQualityMonitor.stopMonitoring()
-        }
+        // Stop network quality monitoring safely
+        networkQualityMonitor.stopMonitoring()
     }
 
     @objc private func updateSpeedAndLatency() {
@@ -374,30 +456,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    // Check if network is available - completely rewritten to be defensive
+    // Check if network is available - completely rewritten to use modern APIs
     private func isNetworkAvailable() -> Bool {
-        // Make this method super defensive to never crash
-        do {
-            guard let reachability = SCNetworkReachabilityCreateWithName(nil, "www.apple.com") else {
-                print("Failed to create network reachability object")
-                return false
-            }
-            
-            var flags = SCNetworkReachabilityFlags()
-            if !SCNetworkReachabilityGetFlags(reachability, &flags) {
-                print("Failed to get reachability flags")
-                return false
-            }
-            
-            let isReachable = flags.contains(.reachable)
-            let needsConnection = flags.contains(.connectionRequired)
-            let canConnect = isReachable && !needsConnection
-            
-            return canConnect
-        } catch {
-            print("Exception in isNetworkAvailable: \(error.localizedDescription)")
-            return false
-        }
+        return networkMonitor.checkIsConnected()
     }
     
     // Measure network latency using a simple HTTP request with improved error handling
@@ -447,14 +508,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // Resume in a super defensive way
-        do {
-            task.resume()
-        } catch {
-            print("Failed to resume task: \(error)")
-            currentLatency = -3
-            throw error // Propagate error to caller
-        }
+        // Resume task without unreachable catch block
+        task.resume()
     }
     
     @objc private func toggleLatency() {
@@ -515,46 +570,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc private func updateSpeedOnly() {
-        do {
-            // First check network availability before measuring speed
-            self.isNetworkConnected = checkNetworkSafely()
-            
-            // Only try to measure speed if network is available
-            if self.isNetworkConnected {
-                // Capture any exceptions that might occur during speed measurement
-                speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp in
-                    // Make absolutely sure we don't force unwrap self
+        // First check network availability before measuring speed
+        self.isNetworkConnected = checkNetworkSafely()
+        
+        // Only try to measure speed if network is available
+        if self.isNetworkConnected {
+            // Capture any exceptions that might occur during speed measurement
+            speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp in
+                // Make absolutely sure we don't force unwrap self
+                guard let self = self else { return }
+                
+                // Dispatch to main thread but don't force-unwrap self again
+                DispatchQueue.main.async { [weak self] in
+                    // Another safety check for self
                     guard let self = self else { return }
                     
-                    // Dispatch to main thread but don't force-unwrap self again
-                    DispatchQueue.main.async { [weak self] in
-                        // Another safety check for self
-                        guard let self = self else { return }
-                        
-                        // Use the separate UI update method which is safer
-                        self.updateStatusDisplay(currentDown: currentDown, currentUp: currentUp, 
+                    // Use the separate UI update method which is safer
+                    self.updateStatusDisplay(currentDown: currentDown, currentUp: currentUp, 
                                                maxDown: maxDown, maxUp: maxUp)
-                    }
-                }
-            } else {
-                // Network is not available, update UI to show disconnected state
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    self.updateStatusDisplay(currentDown: 0.0, currentUp: 0.0, 
-                                           maxDown: 0.0, maxUp: 0.0)
                 }
             }
-        } catch {
-            // If any exception occurs, log it
-            print("Exception in updateSpeedOnly: \(error)")
-            
-            // Ensure UI still updates with error state
+        } else {
+            // Network is not available, update UI to show disconnected state
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.updateStatusDisplay(currentDown: 0.0, currentUp: 0.0, 
-                                       maxDown: 0.0, maxUp: 0.0)
+                                           maxDown: 0.0, maxUp: 0.0)
             }
         }
+        // Remove unreachable catch block
     }
     
     @objc private func startQuickTest() {
@@ -682,14 +726,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Safe wrapper for timer callback that won't crash
     @objc private func safeUpdateSpeedAndLatency() {
         autoreleasepool {
-            do {
-                updateSpeedAndLatency()
-            } catch {
-                print("Caught exception in timer callback: \(error)")
-                // Make sure error state is shown in UI
-                currentLatency = -1
-                updateSpeed()
-            }
+            // No need for try-catch here if updateSpeedAndLatency doesn't throw
+            updateSpeedAndLatency()
+            // If it fails, UI will still show error state since we set 
+            // currentLatency = -1 as fallback in updateSpeedAndLatency
         }
     }
     
@@ -712,29 +752,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // Set up notification for network changes
     private func startMonitoringNetworkChanges() {
-        // Register for system configuration network changes
-        let reachability = SCNetworkReachabilityCreateWithName(nil, "www.apple.com")
-        if let reachability = reachability {
-            var context = SCNetworkReachabilityContext(version: 0, info: nil, retain: nil, release: nil, 
-                                                  copyDescription: nil)
+        // Use the safer NWPathMonitor through our wrapper
+        networkMonitor.startMonitoring { [weak self] isConnected in
+            guard let self = self else { return }
             
-            // Use Unmanaged to safely handle the self reference
-            context.info = Unmanaged.passUnretained(self).toOpaque()
+            // Already on main thread
+            // Update network status safely
+            self.isNetworkConnected = isConnected
             
-            // Set callback with proper error handling
-            if SCNetworkReachabilitySetCallback(reachability, { (_, flags, info) in
-                guard let info = info else { return }
-                let instance = Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue()
-                
-                // Always dispatch to main thread for UI updates
-                DispatchQueue.main.async {
-                    instance.handleNetworkChange(flags: flags)
-                }
-            }, &context) {
-                // Only schedule if callback was set successfully
-                if SCNetworkReachabilityScheduleWithRunLoop(reachability, CFRunLoopGetMain(), 
-                                                        CFRunLoopMode.defaultMode.rawValue) {
-                    print("Network monitoring started")
+            if !isConnected {
+                // When network is lost, reset these values
+                self.currentLatency = -1
+                self.currentPacketLoss = 0.0
+                self.currentJitter = 0.0
+            }
+            
+            // Update UI
+            self.updateSpeedOnly()
+            
+            if isConnected && self.showLatency {
+                // Schedule a latency check when network returns
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    guard let self = self else { return }
+                    if self.isNetworkConnected && self.showLatency {
+                        self.measureLatencySafely()
+                    }
                 }
             }
         }
@@ -791,43 +833,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Super safe network check that will never crash
+    // Super safe network check that will never crash - use modern API
     private func checkNetworkSafely() -> Bool {
-        // Wrap everything in a do-catch to prevent any possible crashes
-        do {
-            // Simple check that should never crash
-            var zeroAddress = sockaddr_in()
-            zeroAddress.sin_len = UInt8(MemoryLayout.size(ofValue: zeroAddress))
-            zeroAddress.sin_family = sa_family_t(AF_INET)
-            
-            guard let reachability = withUnsafePointer(to: &zeroAddress, {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    SCNetworkReachabilityCreateWithAddress(nil, $0)
-                }
-            }) else {
-                return false
-            }
-            
-            var flags: SCNetworkReachabilityFlags = []
-            if !SCNetworkReachabilityGetFlags(reachability, &flags) {
-                return false
-            }
-            
-            // A very defensive check for actual connectivity
-            let isReachable = flags.contains(.reachable)
-            let needsConnection = flags.contains(.connectionRequired)
-            let canAutoConnect = flags.contains(.connectionOnDemand) || flags.contains(.connectionOnTraffic)
-            let canConnect = (isReachable && (!needsConnection || canAutoConnect))
-            
-            // Update the network status
-            self.isNetworkConnected = canConnect
-            return canConnect
-        } catch {
-            // If anything goes wrong, assume network is unavailable
-            print("Exception in checkNetworkSafely: \(error)")
-            self.isNetworkConnected = false
-            return false
-        }
+        return networkMonitor.checkIsConnected()
     }
 
     // Very safe latency measurement with no throwing/exceptions
@@ -835,43 +843,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Don't start a new measurement if one is in progress
         guard !latencyMeasurementInProgress else { return }
         
-        // Check network safely first
-        guard checkNetworkSafely() else {
+        // Extra safety: verify network before even trying
+        guard isNetworkConnected && checkNetworkSafely() else {
             DispatchQueue.main.async { [weak self] in
-                self?.currentLatency = -1 
-                self?.updateSpeedOnly()
+                guard let self = self else { return }
+                self.currentLatency = -1 
+                self.updateSpeedOnly()
             }
             return
         }
         
+        // Mark as in progress
         latencyMeasurementInProgress = true
         
-        // Use a more reliable and lightweight resource
+        // Use a very reliable and lightweight resource
         guard let url = URL(string: "https://www.apple.com/favicon.ico") else { 
             latencyMeasurementInProgress = false
             return 
         }
         
-        // Configure session for latency measurement
+        // Super defensive configuration
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 3.0
+        config.timeoutIntervalForResource = 5.0
         config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        let session = URLSession(configuration: config)
+        config.waitsForConnectivity = false
         
+        let session = URLSession(configuration: config)
         let startTime = Date()
         
         let task = session.dataTask(with: url) { [weak self] data, response, error in
-            // Ensure we mark measurement as complete regardless of outcome
+            // Always ensure we mark measurement as complete
             defer { 
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
                     self?.latencyMeasurementInProgress = false
                 }
             }
             
-            guard let self = self else { return }
+            // Extra check for self and network status
+            guard let self = self, self.isNetworkConnected else {
+                return
+            }
             
             DispatchQueue.main.async {
-                if (error != nil) {
+                guard self.isNetworkConnected else {
+                    self.currentLatency = -1
+                    return
+                }
+                
+                if error != nil {
                     self.currentLatency = -1
                 } else if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                     let elapsed = Date().timeIntervalSince(startTime) * 1000
@@ -886,17 +906,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // Try to start the task but handle failures gracefully
-        do {
-            task.resume()
-        } catch {
-            print("Failed to start latency task: \(error)")
-            DispatchQueue.main.async { [weak self] in
-                self?.currentLatency = -3
-                self?.latencyMeasurementInProgress = false
-                self?.updateSpeedOnly()
-            }
-        }
+        task.resume()
     }
     
     // Separate UI update method that doesn't do any network operations
