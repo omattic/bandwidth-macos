@@ -117,9 +117,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Add adaptive display properties
     private var adaptiveDisplayEnabled = true // Always enabled now
     private var lastMeasuredWidth: CGFloat = 0 // Last measured width
-    private var maxStatusBarWidth: CGFloat = 300 // Maximum reasonable width for status bar items
+    private var maxStatusBarWidth: CGFloat = 400 // Maximum reasonable width for status bar items
     private var isWidthConstrained = false // Are we currently width-constrained?
-    private let widthConstraintThreshold: CGFloat = 200 // When to start condensing
+    private var widthConstraintThreshold: CGFloat = 300 // When to start condensing (changed from 'let' to 'var')
+    
+    // Add variables to detect screen and status bar changes
+    private var screenObserver: Any?
+    private var statusBarWatcher: Timer?
+    private var lastScreenWidth: CGFloat = 0
+    private var lastMenuBarItems: Int = 0
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Move the NetworkMonitor initialization to the top
@@ -312,6 +318,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         // Don't load adaptive display preference - always enabled
+        
+        // Add screen change observations
+        setupScreenChangeObservers()
     }
     
     // Load user preferences from UserDefaults
@@ -439,6 +448,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Stop network quality monitoring safely
         networkQualityMonitor.stopMonitoring()
+        
+        // Clean up our observers
+        if let observer = screenObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        statusBarWatcher?.invalidate()
     }
 
     @objc private func updateSpeedAndLatency() {
@@ -585,21 +600,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // First check network availability before measuring speed
         self.isNetworkConnected = checkNetworkSafely()
         
-        // Only try to measure speed if network is available
+        // If network is available, measure actual speeds
         if self.isNetworkConnected {
-            // Capture any exceptions that might occur during speed measurement
+            // Use the speedMonitor to get actual bandwidth values
             speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp in
-                // Make absolutely sure we don't force unwrap self
                 guard let self = self else { return }
                 
-                // Dispatch to main thread but don't force-unwrap self again
                 DispatchQueue.main.async { [weak self] in
-                    // Another safety check for self
                     guard let self = self else { return }
-                    
-                    // Use the separate UI update method which is safer
                     self.updateStatusDisplay(currentDown: currentDown, currentUp: currentUp, 
-                                               maxDown: maxDown, maxUp: maxUp)
+                                             maxDown: maxDown, maxUp: maxUp)
                 }
             }
         } else {
@@ -607,10 +617,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.updateStatusDisplay(currentDown: 0.0, currentUp: 0.0, 
-                                           maxDown: 0.0, maxUp: 0.0)
+                                         maxDown: 0.0, maxUp: 0.0)
             }
         }
-        // Remove unreachable catch block
     }
     
     @objc private func startQuickTest() {
@@ -929,7 +938,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         layoutManager.addTextContainer(textContainer)
         textStorage.addLayoutManager(layoutManager)
         
-        // Fix: NSTextContainer doesn't have bounds property, use containerSize instead
         layoutManager.glyphRange(forBoundingRect: CGRect(origin: .zero, size: textContainer.size), in: textContainer)
         return layoutManager.usedRect(for: textContainer).width
     }
@@ -969,7 +977,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .foregroundColor: NSColor.yellow
         ]
         
-        let text = NSMutableAttributedString()
+        // Change from 'let' to 'var' to make text mutable
+        var text = NSMutableAttributedString()
         
         // Check if network is disconnected - always show even when space is limited
         if !isNetworkConnected {
@@ -980,20 +989,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         let down = showMaxSpeed ? maxDown : currentDown
-        let up = showMaxSpeed ? maxUp : currentUp  // Fix: complete the ternary expression
+        let up = showMaxSpeed ? maxUp : currentUp  // Fix: was using currentDown incorrectly
         
-        // Track which metrics were shown
-        var showingPacketLoss = false
-        var showingJitter = false
-        var showingLatency = false
-        
-        // First, build the full preferred display
+        // First, build the complete text with all enabled metrics
         let fullText = NSMutableAttributedString()
-        
-        // Helper to measure current width
-        let measureCurrentWidth = { () -> CGFloat in
-            return self.measureWidth(of: fullText)
-        }
         
         // Add packet loss if enabled
         if showPacketLoss {
@@ -1009,7 +1008,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 string: String(format: "L%.1f%% ", safeLoss),
                 attributes: plAttributes
             ))
-            showingPacketLoss = true
         }
         
         // Add jitter if enabled
@@ -1026,7 +1024,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 string: String(format: "J%.1f ", safeJitter),
                 attributes: jitterAttributes
             ))
-            showingJitter = true
         }
         
         // Add latency if enabled
@@ -1047,188 +1044,272 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     attributes: latencyAttrs
                 ))
             }
-            showingLatency = true
         }
         
-        // Add speed data - this is always shown
-        fullText.append(NSAttributedString(
+        // Add the speed data (always shown)
+        let speedText = NSMutableAttributedString()
+        speedText.append(NSAttributedString(
             string: String(format: "%6.1f", down),
             attributes: attrs
         ))
-        fullText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+        speedText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
         
-        fullText.append(NSAttributedString(
+        speedText.append(NSAttributedString(
             string: String(format: "%6.1f", up),
             attributes: attrs
         ))
-        fullText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+        speedText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
         
-        // Add max mode indicator
+        // Add max mode indicator if needed
         if showMaxSpeed {
-            fullText.append(NSAttributedString(string: " [max]", attributes: attrs))
+            speedText.append(NSAttributedString(string: " [max]", attributes: attrs))
         }
         
-        // Measure the width of the fullText
+        // Add speed text to the full text
+        fullText.append(speedText)
+        
+        // Measure the width of the full text
         let fullWidth = measureWidth(of: fullText)
         
-        // If adaptive display is disabled or there's enough space, use the full text
+        // If there's enough space, show everything
         if fullWidth < widthConstraintThreshold {
             text.append(fullText)
             isWidthConstrained = false
-        } else {
-            // We need to be selective about what to show
-            isWidthConstrained = true
             
-            // Add ellipsis indicator if metrics will be hidden
-            let hasHiddenMetrics = (showPacketLoss && showingPacketLoss) || 
-                                  (showJitter && showingJitter) || 
-                                  (showLatency && showingLatency)
-                                  
-            // Use default color for ellipsis (remove the foregroundColor attribute)
-            let ellipsisAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
-                // No more foregroundColor: NSColor.gray - will use default system color
-            ]
-            
-            // Always show speed values (they're essential)
-            let essentialText = NSMutableAttributedString()
-            
-            // Add ellipsis at the very beginning if we're going to hide metrics
-            if hasHiddenMetrics {
-                essentialText.append(NSAttributedString(string: "... ", attributes: ellipsisAttrs))
+            // Set the final display text and update length
+            button.attributedTitle = text
+            lastMeasuredWidth = measureWidth(of: text)
+            statusItem.length = lastMeasuredWidth + 8
+            return
+        }
+        
+        // We need to be selective about what to show
+        isWidthConstrained = true
+        
+        // Start with just the speed text (always shown)
+        let adaptiveText = NSMutableAttributedString(attributedString: speedText)
+        var remainingWidth = widthConstraintThreshold - measureWidth(of: speedText)
+        
+        // Create a dictionary of metrics and their widths
+        var metricsToDisplay: [(metric: NSAttributedString, width: CGFloat, priority: Int)] = []
+        
+        // Add latency if enabled (highest priority)
+        if showLatency {
+            let latencyText = NSMutableAttributedString()
+            if currentLatency < 0 {
+                latencyText.append(NSAttributedString(string: "∞ ms ", attributes: warningAttrs))
+            } else if currentLatency > 1000 {
+                latencyText.append(NSAttributedString(
+                    string: String(format: "%3.0fms ", currentLatency),
+                    attributes: highLatencyAttrs
+                ))
+            } else {
+                latencyText.append(NSAttributedString(
+                    string: String(format: "%3.0fms ", currentLatency),
+                    attributes: latencyAttrs
+                ))
+            }
+            let width = measureWidth(of: latencyText)
+            metricsToDisplay.append((latencyText, width, 1)) // Priority 1 (highest)
+        }
+        
+        // Add packet loss if enabled (medium priority)
+        if showPacketLoss {
+            let safeLoss = min(max(currentPacketLoss, 0.0), 100.0)
+            var plAttributes = qualityAttrs
+            if safeLoss > 10.0 {
+                plAttributes = badQualityAttrs
+            } else if safeLoss > 5.0 {
+                plAttributes = warningAttrs
             }
             
-            // Essential bandwidth values
-            let speedTextTemp = NSMutableAttributedString()
-            speedTextTemp.append(NSAttributedString(
-                string: String(format: "%6.1f", down),
-                attributes: attrs
-            ))
-            speedTextTemp.append(NSAttributedString(string: "↓", attributes: boldAttrs))
-            
-            speedTextTemp.append(NSAttributedString(
-                string: String(format: "%6.1f", up),
-                attributes: attrs
-            ))
-            speedTextTemp.append(NSAttributedString(string: "↑", attributes: boldAttrs))
-            
-            if showMaxSpeed {
-                speedTextTemp.append(NSAttributedString(string: " [max]", attributes: attrs))
+            let lossText = NSAttributedString(
+                string: String(format: "L%.1f%% ", safeLoss),
+                attributes: plAttributes
+            )
+            let width = measureWidth(of: lossText)
+            metricsToDisplay.append((lossText, width, 2)) // Priority 2
+        }
+        
+        // Add jitter if enabled (lowest priority)
+        if showJitter {
+            let safeJitter = max(currentJitter, 0.0)
+            var jitterAttributes = qualityAttrs
+            if safeJitter > 50.0 {
+                jitterAttributes = badQualityAttrs
+            } else if safeJitter > 20.0 {
+                jitterAttributes = warningAttrs
             }
             
-            // Width for speed data
-            var currentWidth = measureWidth(of: speedTextTemp)
+            let jitterText = NSAttributedString(
+                string: String(format: "J%.1f ", safeJitter),
+                attributes: jitterAttributes
+            )
+            let width = measureWidth(of: jitterText)
+            metricsToDisplay.append((jitterText, width, 3)) // Priority 3 (lowest)
+        }
+        
+        // Sort metrics by priority
+        metricsToDisplay.sort { $0.priority < $1.priority }
+        
+        // Space for ellipsis if needed
+        let ellipsisAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+        ]
+        let ellipsisText = NSAttributedString(string: "... ", attributes: ellipsisAttrs)
+        let ellipsisWidth = measureWidth(of: ellipsisText)
+        
+        // Add as many metrics as will fit
+        var displayedMetrics: [NSAttributedString] = []
+        var willHideMetrics = false
+        
+        for (metric, width, _) in metricsToDisplay {
+            // Check if we need to reserve space for ellipsis
+            let spaceNeeded = width + (willHideMetrics ? ellipsisWidth : 0)
             
-            // Add the ellipsis width if we're going to show it
-            if hasHiddenMetrics {
-                let ellipsisText = NSAttributedString(string: "... ", attributes: ellipsisAttrs)
-                currentWidth += measureWidth(of: ellipsisText)
-            }
-            
-            // Add latency if there's room (highest priority metric)
-            if showLatency && currentWidth < widthConstraintThreshold {
-                let latencyTemp = NSMutableAttributedString()
-                if currentLatency < 0 {
-                    latencyTemp.append(NSAttributedString(string: "∞ ms ", attributes: warningAttrs))
-                } else if currentLatency > 1000 {
-                    latencyTemp.append(NSAttributedString(
-                        string: String(format: "%3.0fms ", currentLatency),
-                        attributes: highLatencyAttrs
-                    ))
-                } else {
-                    latencyTemp.append(NSAttributedString(
-                        string: String(format: "%3.0fms ", currentLatency),
-                        attributes: latencyAttrs
-                    ))
-                }
-                
-                let latencyWidth = measureWidth(of: latencyTemp)
-                if currentWidth + latencyWidth < widthConstraintThreshold {
-                    // Insert after the ellipsis (if present)
-                    if hasHiddenMetrics {
-                        essentialText.append(latencyTemp)
-                    } else {
-                        essentialText.insert(latencyTemp, at: 0)
-                    }
-                    currentWidth += latencyWidth
-                    showingLatency = true
-                } else {
-                    showingLatency = false
-                }
-            }
-            
-            // Add packet loss if there's room (second priority)
-            if showPacketLoss && currentWidth < widthConstraintThreshold {
-                let safeLoss = min(max(currentPacketLoss, 0.0), 100.0)
-                var plAttributes = qualityAttrs
-                if safeLoss > 10.0 {
-                    plAttributes = badQualityAttrs
-                } else if safeLoss > 5.0 {
-                    plAttributes = warningAttrs
-                }
-                
-                let lossTemp = NSAttributedString(
-                    string: String(format: "L%.1f%% ", safeLoss),
-                    attributes: plAttributes
-                )
-                
-                let lossWidth = measureWidth(of: lossTemp)
-                if currentWidth + lossWidth < widthConstraintThreshold {
-                    // Insert after any existing metrics (after latency if shown)
-                    essentialText.append(lossTemp)
-                    currentWidth += lossWidth
-                    showingPacketLoss = true
-                } else {
-                    showingPacketLoss = false
-                }
-            }
-            
-            // Add jitter only if there's still room (lowest priority)
-            if showJitter && currentWidth < widthConstraintThreshold {
-                let safeJitter = max(currentJitter, 0.0)
-                var jitterAttributes = qualityAttrs
-                if safeJitter > 50.0 {
-                    jitterAttributes = badQualityAttrs
-                } else if safeJitter > 20.0 {
-                    jitterAttributes = warningAttrs
-                }
-                
-                let jitterTemp = NSAttributedString(
-                    string: String(format: "J%.1f ", safeJitter),
-                    attributes: jitterAttributes
-                )
-                
-                let jitterWidth = measureWidth(of: jitterTemp)
-                if currentWidth + jitterWidth < widthConstraintThreshold {
-                    essentialText.append(jitterTemp)
-                    showingJitter = true
-                } else {
-                    showingJitter = false
-                }
-            }
-            
-            // Finally add the speed text
-            essentialText.append(speedTextTemp)
-            
-            // Use the adapted text
-            text.append(essentialText)
-            
-            // Log when metrics are hidden due to width constraints
-            if (showPacketLoss && !showingPacketLoss) || 
-               (showJitter && !showingJitter) || 
-               (showLatency && !showingLatency) {
-                print("📏 Some metrics hidden due to width constraints. Width: \(fullWidth)px")
+            if remainingWidth >= spaceNeeded {
+                // We have space for this metric
+                displayedMetrics.append(metric)
+                remainingWidth -= width
+            } else {
+                // Can't fit this metric
+                willHideMetrics = true
             }
         }
         
-        // Set the final display text
+        // Add ellipsis if we're hiding metrics
+        let finalText = NSMutableAttributedString()
+        if willHideMetrics {
+            finalText.append(ellipsisText)
+        }
+        
+        // Add all displayed metrics
+        for metric in displayedMetrics {
+            finalText.append(metric)
+        }
+        
+        // Add the speed data
+        finalText.append(speedText)
+        
+        // Now we can assign to text since it's a variable
+        text = finalText
         button.attributedTitle = text
         
-        // Store the width for comparison in future updates
+        // Update width tracking
         lastMeasuredWidth = measureWidth(of: text)
+        statusItem.length = lastMeasuredWidth + 8 // Add margin
+    }
+    
+    // Setup observers for changes that might affect status bar space
+    private func setupScreenChangeObservers() {
+        // Watch for screen changes
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.handlePossibleStatusBarSizeChange()
+        }
         
-        // Adjust the status item length to fit the content
-        statusItem.length = lastMeasuredWidth + 8 // Add a small margin
+        // Start a timer to occasionally check status bar contents
+        statusBarWatcher = Timer.scheduledTimer(
+            withTimeInterval: 5.0, // Check every 5 seconds
+            repeats: true
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.detectStatusBarChanges()
+        }
+        
+        // Initial capture of screen state
+        lastScreenWidth = NSScreen.main?.visibleFrame.width ?? 0
+        detectStatusBarChanges()
+        
+        // Also check visibility periodically
+        Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            self?.checkStatusItemVisibility()
+        }
+    }
+    
+    // Detect changes in status bar that might affect available space
+    private func detectStatusBarChanges() {
+        // Get the screen width - we can't directly access status items
+        let screenWidth = NSScreen.main?.visibleFrame.width ?? 0
+        
+        // If screen size changed significantly
+        if abs(lastScreenWidth - screenWidth) > 10 {
+            handlePossibleStatusBarSizeChange()
+            
+            // Update our tracking variable
+            lastScreenWidth = screenWidth
+        }
+    }
+    
+    // Handle potential changes in available space
+    private func handlePossibleStatusBarSizeChange() {
+        // When the environment changes, adjust our threshold
+        let screenWidth = NSScreen.main?.visibleFrame.width ?? 0
+        
+        // Use a percentage of screen width as our heuristic
+        // instead of trying to count status items (which we can't access)
+        let estimatedAvailableWidth = min(screenWidth / 6, 300)  // Assume ~6 items in status bar
+        
+        // Update our threshold dynamically
+        let newThreshold = max(estimatedAvailableWidth, 120) // Never go below 120
+        
+        // Log if the threshold changed significantly
+        if abs(widthConstraintThreshold - newThreshold) > 10 {
+            print("Status bar environment changed - adjusted width threshold from \(widthConstraintThreshold) to \(newThreshold)")
+        }
+        
+        // Update our threshold
+        widthConstraintThreshold = newThreshold
+        
+        // Update display with the new width calculation
+        self.updateSpeedOnly()
+    }
+    
+    // Add a method to check for visibility based on menu display
+    private func checkStatusItemVisibility() {
+        // Used to test if our status item is potentially visible
+        let originalLength = statusItem.length
+        let testLength = originalLength - 1
+        
+        // Temporarily adjust length - if this would cause the item to
+        // become hidden, the OS might discard the change
+        statusItem.length = testLength
+        
+        // Check if length changed successfully (indicating potential visibility)
+        let wasChanged = statusItem.length == testLength
+        
+        // Restore original length
+        statusItem.length = originalLength
+        
+        // If length doesn't change, it might be hidden already
+        if !wasChanged {
+            print("Status item may be hidden by system")
+            
+            // Make the item more compact to increase chances of visibility
+            widthConstraintThreshold = 120 // Very compact mode
+            updateSpeedOnly()
+            
+            // Schedule a check to see if we can restore normal size
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                self?.checkForRestoreNormalSize()
+            }
+        }
+    }
+    
+    private func checkForRestoreNormalSize() {
+        // Try to restore to normal size if screen size allows
+        let screenWidth = NSScreen.main?.visibleFrame.width ?? 0
+        let estimatedAvailableWidth = min(screenWidth / 6, 300)
+        
+        // Carefully restore size if reasonable
+        if estimatedAvailableWidth > 150 {
+            widthConstraintThreshold = estimatedAvailableWidth
+            updateSpeedOnly()
+        }
     }
 }
 
