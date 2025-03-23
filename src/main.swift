@@ -114,6 +114,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var showJitter = true // Default to showing jitter
     private var networkMonitor: NetworkMonitor!
     
+    // Add adaptive display properties
+    private var adaptiveDisplayEnabled = true // Always enabled now
+    private var lastMeasuredWidth: CGFloat = 0 // Last measured width
+    private var maxStatusBarWidth: CGFloat = 300 // Maximum reasonable width for status bar items
+    private var isWidthConstrained = false // Are we currently width-constrained?
+    private let widthConstraintThreshold: CGFloat = 200 // When to start condensing
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Move the NetworkMonitor initialization to the top
         networkMonitor = NetworkMonitor()
@@ -206,6 +213,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let jitterMenuItem = NSMenuItem(title: "Show Jitter", action: #selector(toggleJitter), keyEquivalent: "j")
         jitterMenuItem.state = showJitter ? .on : .off
         modeGroup.addItem(jitterMenuItem)
+        
+        // Remove Adaptive Display toggle - feature is always enabled now
         
         menu.addItem(modeItem)
         menu.addItem(NSMenuItem.separator())
@@ -301,6 +310,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             self.networkQualityMonitor.startMonitoring()
         }
+        
+        // Don't load adaptive display preference - always enabled
     }
     
     // Load user preferences from UserDefaults
@@ -326,6 +337,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         defaults.set(showPacketLoss, forKey: PreferenceKeys.showPacketLoss)
         defaults.set(showJitter, forKey: PreferenceKeys.showJitter)
         defaults.set(showNetworkQuality, forKey: PreferenceKeys.showNetworkQuality)
+        // Remove adaptive display setting - it's always enabled now
         
         // Synchronize to ensure data is saved immediately
         defaults.synchronize()
@@ -799,7 +811,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Update UI immediately to show current state
         if (!isReachable) {
-            // Network disconnected
             self.currentLatency = -1
         }
         
@@ -909,6 +920,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         task.resume()
     }
     
+    // Measure width of attributed string
+    private func measureWidth(of attributedString: NSAttributedString) -> CGFloat {
+        let textStorage = NSTextStorage(attributedString: attributedString)
+        let textContainer = NSTextContainer(size: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+        let layoutManager = NSLayoutManager()
+        
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        
+        // Fix: NSTextContainer doesn't have bounds property, use containerSize instead
+        layoutManager.glyphRange(forBoundingRect: CGRect(origin: .zero, size: textContainer.size), in: textContainer)
+        return layoutManager.usedRect(for: textContainer).width
+    }
+    
     // Separate UI update method that doesn't do any network operations
     private func updateStatusDisplay(currentDown: Double, currentUp: Double, maxDown: Double, maxUp: Double) {
         guard let button = statusItem.button else { return }
@@ -946,7 +971,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let text = NSMutableAttributedString()
         
-        // Check if network is disconnected
+        // Check if network is disconnected - always show even when space is limited
         if !isNetworkConnected {
             // Show disconnected message
             text.append(NSAttributedString(string: "Offline", attributes: disconnectedAttrs))
@@ -955,19 +980,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         let down = showMaxSpeed ? maxDown : currentDown
-        let up = showMaxSpeed ? maxUp : currentUp
+        let up = showMaxSpeed ? maxUp : currentUp  // Fix: complete the ternary expression
         
-        // Show packet loss if enabled - with improved formatting and debugging
+        // Track which metrics were shown
+        var showingPacketLoss = false
+        var showingJitter = false
+        var showingLatency = false
+        
+        // First, build the full preferred display
+        let fullText = NSMutableAttributedString()
+        
+        // Helper to measure current width
+        let measureCurrentWidth = { () -> CGFloat in
+            return self.measureWidth(of: fullText)
+        }
+        
+        // Add packet loss if enabled
         if showPacketLoss {
-            // Limit debug printing to reduce potential performance issues
-            if Int(currentPacketLoss * 10) % 50 == 0 {
-                print("📊 Displaying packet loss: \(currentPacketLoss)%")
-            }
-            
-            // Ensure valid value range
             let safeLoss = min(max(currentPacketLoss, 0.0), 100.0)
-            
-            // Use different colors based on severity
             var plAttributes = qualityAttrs
             if safeLoss > 10.0 {
                 plAttributes = badQualityAttrs
@@ -975,23 +1005,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 plAttributes = warningAttrs
             }
             
-            text.append(NSAttributedString(
+            fullText.append(NSAttributedString(
                 string: String(format: "L%.1f%% ", safeLoss),
                 attributes: plAttributes
             ))
+            showingPacketLoss = true
         }
         
-        // Show jitter if enabled - with improved formatting and debugging
+        // Add jitter if enabled
         if showJitter {
-            // Limit debug printing
-            if Int(currentJitter * 10) % 50 == 0 {
-                print("📊 Displaying jitter: \(currentJitter)ms")
-            }
-            
-            // Ensure valid value range
             let safeJitter = max(currentJitter, 0.0)
-            
-            // Use different colors based on severity
             var jitterAttributes = qualityAttrs
             if safeJitter > 50.0 {
                 jitterAttributes = badQualityAttrs
@@ -999,55 +1022,213 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 jitterAttributes = warningAttrs
             }
             
-            text.append(NSAttributedString(
+            fullText.append(NSAttributedString(
                 string: String(format: "J%.1f ", safeJitter),
                 attributes: jitterAttributes
             ))
+            showingJitter = true
         }
         
-        // Show latency if enabled
+        // Add latency if enabled
         if showLatency {
             if currentLatency < 0 {
-                // Show error instead of latency
-                text.append(NSAttributedString(
+                fullText.append(NSAttributedString(
                     string: "∞ ms ",
                     attributes: warningAttrs
                 ))
             } else if currentLatency > 1000 {
-                // Show high latency in yellow
-                text.append(NSAttributedString(
+                fullText.append(NSAttributedString(
                     string: String(format: "%3.0fms ", currentLatency),
                     attributes: highLatencyAttrs
                 ))
             } else {
-                // Normal latency display
-                text.append(NSAttributedString(
+                fullText.append(NSAttributedString(
                     string: String(format: "%3.0fms ", currentLatency),
                     attributes: latencyAttrs
                 ))
             }
+            showingLatency = true
         }
         
-        // Show download speed
-        text.append(NSAttributedString(
+        // Add speed data - this is always shown
+        fullText.append(NSAttributedString(
             string: String(format: "%6.1f", down),
             attributes: attrs
         ))
-        text.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+        fullText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
         
-        // Show upload speed
-        text.append(NSAttributedString(
+        fullText.append(NSAttributedString(
             string: String(format: "%6.1f", up),
             attributes: attrs
         ))
-        text.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+        fullText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
         
-        // Only show [max] label when in max mode
+        // Add max mode indicator
         if showMaxSpeed {
-            text.append(NSAttributedString(string: " [max]", attributes: attrs))
+            fullText.append(NSAttributedString(string: " [max]", attributes: attrs))
         }
         
+        // Measure the width of the fullText
+        let fullWidth = measureWidth(of: fullText)
+        
+        // If adaptive display is disabled or there's enough space, use the full text
+        if fullWidth < widthConstraintThreshold {
+            text.append(fullText)
+            isWidthConstrained = false
+        } else {
+            // We need to be selective about what to show
+            isWidthConstrained = true
+            
+            // Add ellipsis indicator if metrics will be hidden
+            let hasHiddenMetrics = (showPacketLoss && showingPacketLoss) || 
+                                  (showJitter && showingJitter) || 
+                                  (showLatency && showingLatency)
+                                  
+            // Use default color for ellipsis (remove the foregroundColor attribute)
+            let ellipsisAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+                // No more foregroundColor: NSColor.gray - will use default system color
+            ]
+            
+            // Always show speed values (they're essential)
+            let essentialText = NSMutableAttributedString()
+            
+            // Add ellipsis at the very beginning if we're going to hide metrics
+            if hasHiddenMetrics {
+                essentialText.append(NSAttributedString(string: "... ", attributes: ellipsisAttrs))
+            }
+            
+            // Essential bandwidth values
+            let speedTextTemp = NSMutableAttributedString()
+            speedTextTemp.append(NSAttributedString(
+                string: String(format: "%6.1f", down),
+                attributes: attrs
+            ))
+            speedTextTemp.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+            
+            speedTextTemp.append(NSAttributedString(
+                string: String(format: "%6.1f", up),
+                attributes: attrs
+            ))
+            speedTextTemp.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+            
+            if showMaxSpeed {
+                speedTextTemp.append(NSAttributedString(string: " [max]", attributes: attrs))
+            }
+            
+            // Width for speed data
+            var currentWidth = measureWidth(of: speedTextTemp)
+            
+            // Add the ellipsis width if we're going to show it
+            if hasHiddenMetrics {
+                let ellipsisText = NSAttributedString(string: "... ", attributes: ellipsisAttrs)
+                currentWidth += measureWidth(of: ellipsisText)
+            }
+            
+            // Add latency if there's room (highest priority metric)
+            if showLatency && currentWidth < widthConstraintThreshold {
+                let latencyTemp = NSMutableAttributedString()
+                if currentLatency < 0 {
+                    latencyTemp.append(NSAttributedString(string: "∞ ms ", attributes: warningAttrs))
+                } else if currentLatency > 1000 {
+                    latencyTemp.append(NSAttributedString(
+                        string: String(format: "%3.0fms ", currentLatency),
+                        attributes: highLatencyAttrs
+                    ))
+                } else {
+                    latencyTemp.append(NSAttributedString(
+                        string: String(format: "%3.0fms ", currentLatency),
+                        attributes: latencyAttrs
+                    ))
+                }
+                
+                let latencyWidth = measureWidth(of: latencyTemp)
+                if currentWidth + latencyWidth < widthConstraintThreshold {
+                    // Insert after the ellipsis (if present)
+                    if hasHiddenMetrics {
+                        essentialText.append(latencyTemp)
+                    } else {
+                        essentialText.insert(latencyTemp, at: 0)
+                    }
+                    currentWidth += latencyWidth
+                    showingLatency = true
+                } else {
+                    showingLatency = false
+                }
+            }
+            
+            // Add packet loss if there's room (second priority)
+            if showPacketLoss && currentWidth < widthConstraintThreshold {
+                let safeLoss = min(max(currentPacketLoss, 0.0), 100.0)
+                var plAttributes = qualityAttrs
+                if safeLoss > 10.0 {
+                    plAttributes = badQualityAttrs
+                } else if safeLoss > 5.0 {
+                    plAttributes = warningAttrs
+                }
+                
+                let lossTemp = NSAttributedString(
+                    string: String(format: "L%.1f%% ", safeLoss),
+                    attributes: plAttributes
+                )
+                
+                let lossWidth = measureWidth(of: lossTemp)
+                if currentWidth + lossWidth < widthConstraintThreshold {
+                    // Insert after any existing metrics (after latency if shown)
+                    essentialText.append(lossTemp)
+                    currentWidth += lossWidth
+                    showingPacketLoss = true
+                } else {
+                    showingPacketLoss = false
+                }
+            }
+            
+            // Add jitter only if there's still room (lowest priority)
+            if showJitter && currentWidth < widthConstraintThreshold {
+                let safeJitter = max(currentJitter, 0.0)
+                var jitterAttributes = qualityAttrs
+                if safeJitter > 50.0 {
+                    jitterAttributes = badQualityAttrs
+                } else if safeJitter > 20.0 {
+                    jitterAttributes = warningAttrs
+                }
+                
+                let jitterTemp = NSAttributedString(
+                    string: String(format: "J%.1f ", safeJitter),
+                    attributes: jitterAttributes
+                )
+                
+                let jitterWidth = measureWidth(of: jitterTemp)
+                if currentWidth + jitterWidth < widthConstraintThreshold {
+                    essentialText.append(jitterTemp)
+                    showingJitter = true
+                } else {
+                    showingJitter = false
+                }
+            }
+            
+            // Finally add the speed text
+            essentialText.append(speedTextTemp)
+            
+            // Use the adapted text
+            text.append(essentialText)
+            
+            // Log when metrics are hidden due to width constraints
+            if (showPacketLoss && !showingPacketLoss) || 
+               (showJitter && !showingJitter) || 
+               (showLatency && !showingLatency) {
+                print("📏 Some metrics hidden due to width constraints. Width: \(fullWidth)px")
+            }
+        }
+        
+        // Set the final display text
         button.attributedTitle = text
+        
+        // Store the width for comparison in future updates
+        lastMeasuredWidth = measureWidth(of: text)
+        
+        // Adjust the status item length to fit the content
+        statusItem.length = lastMeasuredWidth + 8 // Add a small margin
     }
 }
 
