@@ -525,32 +525,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showLatency.toggle()
         
         // Update the menu item state
-        if let menu = speedStatusItem.menu,
-           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
+        if let modeMenu = speedStatusItem.menu?.items.first(where: { $0.title == "Mode" })?.submenu,
            let latencyItem = modeMenu.items.first(where: { $0.keyEquivalent == "p" }) {
             latencyItem.state = showLatency ? .on : .off
         }
         
-        // Update the display immediately
-        if (!showLatency) {
-            // If turning off, just update display without latency
-            updateSpeedOnly()
-        } else {
-            // If turning on, schedule a latency check
-            currentLatency = -1 // Default to error state
-            updateSpeedOnly() // Update UI immediately
-            
-            // Then try to measure latency if network is available
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                guard let self = self else { return }
-                self.isNetworkConnected = self.checkNetworkSafely()
-                if self.isNetworkConnected {
-                    self.measureLatencySafely()
-                }
+        // Add or remove the latency status item
+        if showLatency {
+            if latencyStatusItem == nil {
+                // Pass the shared menu when recreating
+                createLatencyStatusItem(withMenu: speedStatusItem.menu!)
             }
+            
+            // Schedule measurement
+            if self.isNetworkConnected {
+                self.measureLatencySafely()
+            }
+        } else {
+            removeLatencyStatusItem()
         }
         
         savePreferences() // Save the new preference
+        updateSpeedOnly() // Update the display
     }
     
     @objc private func toggleMode() {
@@ -1317,27 +1313,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             initialText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
             
             button.attributedTitle = initialText
-            
-            // Set the menu for the main item
-            button.action = #selector(showMenu)
-            button.target = self
         }
+        
+        // First create the shared menu
+        let menu = createSharedMenu()
+        
+        // Assign the menu directly to the speed item
+        speedStatusItem.menu = menu
         
         // Create separate item for latency if enabled
         if showLatency {
-            createLatencyStatusItem()
+            createLatencyStatusItem(withMenu: menu)
         }
         
         // Create separate item for network quality if enabled
         if showPacketLoss || showJitter {
-            createQualityStatusItem()
+            createQualityStatusItem(withMenu: menu)
         }
-        
-        // Create the menu - attached to the main speed item
-        createMenu()
     }
     
-    private func createLatencyStatusItem() {
+    private func createLatencyStatusItem(withMenu menu: NSMenu) {
         latencyStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = latencyStatusItem?.button {
@@ -1347,13 +1342,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             button.attributedTitle = NSAttributedString(string: "∞ ms", attributes: attrs)
             
-            // Link to the same menu
-            button.action = #selector(showMenu)
-            button.target = self
+            // Directly assign the shared menu to this item
+            latencyStatusItem?.menu = menu
         }
     }
     
-    private func createQualityStatusItem() {
+    private func createQualityStatusItem(withMenu menu: NSMenu) {
         qualityStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = qualityStatusItem?.button {
@@ -1366,24 +1360,101 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
             
-            // Link to the same menu
-            button.action = #selector(showMenu)
-            button.target = self
+            // Directly assign the shared menu to this item
+            qualityStatusItem?.menu = menu
         }
     }
     
-    // Shared menu for all status items
-    @objc private func showMenu() {
-        speedStatusItem.button?.performClick(nil)
-    }
-    
-    private func createMenu() {
+    // Create a shared menu for all status items
+    private func createSharedMenu() -> NSMenu {
         let menu = NSMenu()
         
-        // Create the menu items as before
-        // ...existing code for menu creation...
+        // Mode switching group
+        let modeGroup = NSMenu()
+        let modeItem = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
+        modeItem.submenu = modeGroup
         
-        speedStatusItem.menu = menu
+        let liveMenuItem = NSMenuItem(title: "Live Bandwidth", action: #selector(setLiveMode), keyEquivalent: "l")
+        let maxMenuItem = NSMenuItem(title: "Show Max Bandwidth", action: #selector(setMaxMode), keyEquivalent: "m")
+        let resetMaxMenuItem = NSMenuItem(title: "Reset Max", action: #selector(resetMaxSpeed), keyEquivalent: "r")
+        modeGroup.addItem(liveMenuItem)
+        modeGroup.addItem(maxMenuItem)
+        modeGroup.addItem(resetMaxMenuItem)
+        
+        // Add Latency toggle option
+        modeGroup.addItem(NSMenuItem.separator())
+        let latencyMenuItem = NSMenuItem(title: "Show Latency", action: #selector(toggleLatency), keyEquivalent: "p")
+        latencyMenuItem.state = showLatency ? .on : .off
+        modeGroup.addItem(latencyMenuItem)
+        
+        // Add Packet Loss toggle option with fixed key equivalent
+        let packetLossMenuItem = NSMenuItem(title: "Show Packet Loss", action: #selector(togglePacketLoss), keyEquivalent: "k")
+        packetLossMenuItem.state = showPacketLoss ? .on : .off
+        modeGroup.addItem(packetLossMenuItem)
+        
+        // Add Jitter toggle option
+        let jitterMenuItem = NSMenuItem(title: "Show Jitter", action: #selector(toggleJitter), keyEquivalent: "j")
+        jitterMenuItem.state = showJitter ? .on : .off
+        modeGroup.addItem(jitterMenuItem)
+        
+        menu.addItem(modeItem)
+        menu.addItem(NSMenuItem.separator())
+        
+        // Speed Test group
+        let speedTestMenu = NSMenu()
+        let speedTestItem = NSMenuItem(title: "Speed Test", action: nil, keyEquivalent: "")
+        speedTestItem.submenu = speedTestMenu
+        
+        // Quick test at the top
+        speedTestMenu.addItem(NSMenuItem(title: "Quick Test", action: #selector(startQuickTest), keyEquivalent: "t"))
+        speedTestMenu.addItem(NSMenuItem.separator())
+        
+        // Download tests
+        let downloadMenu = NSMenu()
+        let downloadItem = NSMenuItem(title: "Download Test", action: nil, keyEquivalent: "")
+        downloadItem.submenu = downloadMenu
+        downloadMenu.addItem(NSMenuItem(title: "Test (10 MB)", action: #selector(startDownloadTest_small), keyEquivalent: "1"))
+        downloadMenu.addItem(NSMenuItem(title: "Test (100 MB)", action: #selector(startDownloadTest_medium), keyEquivalent: "2"))
+        downloadMenu.addItem(NSMenuItem(title: "Test (1 GB)", action: #selector(startDownloadTest_large), keyEquivalent: "3"))
+        
+        // Upload tests
+        let uploadMenu = NSMenu()
+        let uploadItem = NSMenuItem(title: "Upload Test", action: nil, keyEquivalent: "")
+        uploadItem.submenu = uploadMenu
+        uploadMenu.addItem(NSMenuItem(title: "Test (10 MB)", action: #selector(startUploadTest_small), keyEquivalent: "4"))
+        uploadMenu.addItem(NSMenuItem(title: "Test (100 MB)", action: #selector(startUploadTest_medium), keyEquivalent: "5"))
+        uploadMenu.addItem(NSMenuItem(title: "Test (1 GB)", action: #selector(startUploadTest_large), keyEquivalent: "6"))
+        
+        speedTestMenu.addItem(downloadItem)
+        speedTestMenu.addItem(uploadItem)
+        speedTestMenu.addItem(NSMenuItem.separator())
+        
+        // Combined tests
+        let combinedMenu = NSMenu()
+        let combinedItem = NSMenuItem(title: "Combined Test", action: nil, keyEquivalent: "")
+        combinedItem.submenu = combinedMenu
+        
+        combinedMenu.addItem(NSMenuItem(title: "Serial Test (10 MB)", action: #selector(startCombinedSerialTest_small), keyEquivalent: "7"))
+        combinedMenu.addItem(NSMenuItem(title: "Serial Test (100 MB)", action: #selector(startCombinedSerialTest_medium), keyEquivalent: "8"))
+        combinedMenu.addItem(NSMenuItem(title: "Serial Test (1 GB)", action: #selector(startCombinedSerialTest_large), keyEquivalent: "9"))
+        combinedMenu.addItem(NSMenuItem.separator())
+        combinedMenu.addItem(NSMenuItem(title: "Parallel Test (10 MB)", action: #selector(startCombinedParallelTest_small), keyEquivalent: ""))
+        combinedMenu.addItem(NSMenuItem(title: "Parallel Test (100 MB)", action: #selector(startCombinedParallelTest_medium), keyEquivalent: ""))
+        combinedMenu.addItem(NSMenuItem(title: "Parallel Test (1 GB)", action: #selector(startCombinedParallelTest_large), keyEquivalent: ""))
+        
+        speedTestMenu.addItem(combinedItem)
+        
+        menu.addItem(speedTestItem)
+        menu.addItem(NSMenuItem.separator())
+        
+        // Cancel test item (hidden by default)
+        let cancelTestMenuItem = NSMenuItem(title: "Cancel Test", action: #selector(cancelCurrentTest), keyEquivalent: "c")
+        cancelTestMenuItem.isHidden = true
+        menu.addItem(cancelTestMenuItem)
+        
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        
+        return menu
     }
     
     private func updateSpeedDisplay(currentDown: Double, currentUp: Double, maxDown: Double, maxUp: Double) {
@@ -1439,7 +1510,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Create item if needed
         if latencyStatusItem == nil {
-            createLatencyStatusItem()
+            createLatencyStatusItem(withMenu: speedStatusItem.menu!)
         }
         
         // Exit if we don't have a valid button (after potential creation)
@@ -1475,7 +1546,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Create item if needed
         if qualityStatusItem == nil {
-            createQualityStatusItem()
+            createQualityStatusItem(withMenu: speedStatusItem.menu!)
         }
         
         guard let button = qualityStatusItem?.button else { return }
