@@ -91,7 +91,10 @@ class NetworkMonitor {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private var statusItem: NSStatusItem!
+    // Modify status item to be an array of items
+    private var speedStatusItem: NSStatusItem!
+    private var latencyStatusItem: NSStatusItem?
+    private var qualityStatusItem: NSStatusItem?
     private var speedMonitor: SpeedMonitor!
     private var speedTest: SpeedTest!
     private var timer: Timer?
@@ -168,26 +171,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // Create the status bar item
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
-        // Remove progress indicator setup and leave only basic button setup
-        if let button = statusItem.button {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            ]
-            let boldAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
-            ]
-            
-            let initialText = NSMutableAttributedString()
-            initialText.append(NSAttributedString(string: "   0.0", attributes: attrs))
-            initialText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
-            initialText.append(NSAttributedString(string: "   0.0", attributes: attrs))
-            initialText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
-            
-            button.attributedTitle = initialText
-        }
+        // Create multiple status bar items instead of just one
+        setupStatusBarItems()
         
         // Create the menu
         let menu = NSMenu()
@@ -279,7 +264,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         
-        statusItem.menu = menu
+        speedStatusItem.menu = menu
         
         // Set initial state
         updateMenuState()
@@ -318,9 +303,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         // Don't load adaptive display preference - always enabled
-        
-        // Add screen change observations
-        setupScreenChangeObservers()
     }
     
     // Load user preferences from UserDefaults
@@ -391,7 +373,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showNetworkQuality.toggle()
         
         // Update the menu item state
-        if let menu = statusItem.menu,
+        if let menu = speedStatusItem.menu,
            let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
            let qualityItem = modeMenu.items.first(where: { $0.keyEquivalent == "q" }) {
             qualityItem.state = showNetworkQuality ? .on : .off
@@ -407,7 +389,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showPacketLoss.toggle()
         
         // Update the menu item state - fix the key equivalent to match the new one
-        if let menu = statusItem.menu,
+        if let menu = speedStatusItem.menu,
            let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
            let packetLossItem = modeMenu.items.first(where: { $0.keyEquivalent == "k" }) {
             packetLossItem.state = showPacketLoss ? .on : .off
@@ -422,7 +404,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showJitter.toggle()
         
         // Update the menu item state
-        if let menu = statusItem.menu,
+        if let menu = speedStatusItem.menu,
            let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
            let jitterItem = modeMenu.items.first(where: { $0.keyEquivalent == "j" }) {
             jitterItem.state = showJitter ? .on : .off
@@ -543,7 +525,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showLatency.toggle()
         
         // Update the menu item state
-        if let menu = statusItem.menu,
+        if let menu = speedStatusItem.menu,
            let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
            let latencyItem = modeMenu.items.first(where: { $0.keyEquivalent == "p" }) {
             latencyItem.state = showLatency ? .on : .off
@@ -574,7 +556,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleMode() {
         showMaxSpeed.toggle()
         
-        guard let menu = statusItem.menu else { return }
+        guard let menu = speedStatusItem.menu else { return }
         let liveItem = menu.items.first { $0.keyEquivalent == "l" }
         let maxItem = menu.items.first { $0.keyEquivalent == "m" }
         let resetItem = menu.items.first { $0.keyEquivalent == "r" }
@@ -608,16 +590,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
-                    self.updateStatusDisplay(currentDown: currentDown, currentUp: currentUp, 
-                                             maxDown: maxDown, maxUp: maxUp)
+                    self.updateSpeedDisplay(currentDown: currentDown, currentUp: currentUp, 
+                                           maxDown: maxDown, maxUp: maxUp)
+                    self.updateLatencyDisplay()
+                    self.updateQualityDisplay()
                 }
             }
         } else {
             // Network is not available, update UI to show disconnected state
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                self.updateStatusDisplay(currentDown: 0.0, currentUp: 0.0, 
+                self.updateSpeedDisplay(currentDown: 0.0, currentUp: 0.0, 
                                          maxDown: 0.0, maxUp: 0.0)
+                self.updateLatencyDisplay()
+                self.updateQualityDisplay()
             }
         }
     }
@@ -650,7 +636,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         updateMenuState()
         
-        if let button = statusItem.button {
+        if let button = speedStatusItem.button {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             ]
@@ -696,7 +682,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func updateMenuState() {
-        guard let menu = statusItem.menu else { return }
+        guard let menu = speedStatusItem.menu else { return }
         
         // Update mode items
         let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu
@@ -944,7 +930,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // Separate UI update method that doesn't do any network operations
     private func updateStatusDisplay(currentDown: Double, currentUp: Double, maxDown: Double, maxUp: Double) {
-        guard let button = statusItem.button else { return }
+        guard let button = speedStatusItem.button else { return }
         
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
@@ -1079,7 +1065,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Set the final display text and update length
             button.attributedTitle = text
             lastMeasuredWidth = measureWidth(of: text)
-            statusItem.length = lastMeasuredWidth + 8
+            speedStatusItem.length = lastMeasuredWidth + 8  // Fix: speedStatusItem instead of statusItem
             return
         }
         
@@ -1197,7 +1183,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Update width tracking
         lastMeasuredWidth = measureWidth(of: text)
-        statusItem.length = lastMeasuredWidth + 8 // Add margin
+        speedStatusItem.length = lastMeasuredWidth + 8 // Fix: speedStatusItem instead of statusItem
     }
     
     // Setup observers for changes that might affect status bar space
@@ -1272,18 +1258,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Add a method to check for visibility based on menu display
     private func checkStatusItemVisibility() {
         // Used to test if our status item is potentially visible
-        let originalLength = statusItem.length
+        let originalLength = speedStatusItem.length  // Fix: speedStatusItem instead of statusItem
         let testLength = originalLength - 1
         
         // Temporarily adjust length - if this would cause the item to
         // become hidden, the OS might discard the change
-        statusItem.length = testLength
+        speedStatusItem.length = testLength  // Fix: speedStatusItem instead of statusItem
         
         // Check if length changed successfully (indicating potential visibility)
-        let wasChanged = statusItem.length == testLength
+        let wasChanged = speedStatusItem.length == testLength  // Fix: speedStatusItem instead of statusItem
         
         // Restore original length
-        statusItem.length = originalLength
+        speedStatusItem.length = originalLength  // Fix: speedStatusItem instead of statusItem
         
         // If length doesn't change, it might be hidden already
         if !wasChanged {
@@ -1311,8 +1297,252 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             updateSpeedOnly()
         }
     }
+    
+    private func setupStatusBarItems() {
+        // Create the main speed display item (highest priority, always visible if possible)
+        speedStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        
+        if let button = speedStatusItem.button {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            ]
+            let boldAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+            ]
+            
+            let initialText = NSMutableAttributedString()
+            initialText.append(NSAttributedString(string: "0.0", attributes: attrs))
+            initialText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+            initialText.append(NSAttributedString(string: "0.0", attributes: attrs))
+            initialText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+            
+            button.attributedTitle = initialText
+            
+            // Set the menu for the main item
+            button.action = #selector(showMenu)
+            button.target = self
+        }
+        
+        // Create separate item for latency if enabled
+        if showLatency {
+            createLatencyStatusItem()
+        }
+        
+        // Create separate item for network quality if enabled
+        if showPacketLoss || showJitter {
+            createQualityStatusItem()
+        }
+        
+        // Create the menu - attached to the main speed item
+        createMenu()
+    }
+    
+    private func createLatencyStatusItem() {
+        latencyStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        
+        if let button = latencyStatusItem?.button {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            ]
+            
+            button.attributedTitle = NSAttributedString(string: "∞ ms", attributes: attrs)
+            
+            // Link to the same menu
+            button.action = #selector(showMenu)
+            button.target = self
+        }
+    }
+    
+    private func createQualityStatusItem() {
+        qualityStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        
+        if let button = qualityStatusItem?.button {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            ]
+            
+            let text = showPacketLoss && showJitter ? "L0.0% J0.0" : 
+                      showPacketLoss ? "L0.0%" : "J0.0"
+            
+            button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
+            
+            // Link to the same menu
+            button.action = #selector(showMenu)
+            button.target = self
+        }
+    }
+    
+    // Shared menu for all status items
+    @objc private func showMenu() {
+        speedStatusItem.button?.performClick(nil)
+    }
+    
+    private func createMenu() {
+        let menu = NSMenu()
+        
+        // Create the menu items as before
+        // ...existing code for menu creation...
+        
+        speedStatusItem.menu = menu
+    }
+    
+    private func updateSpeedDisplay(currentDown: Double, currentUp: Double, maxDown: Double, maxUp: Double) {
+        guard let button = speedStatusItem.button else { return }
+        
+        if !isNetworkConnected {
+            // Show disconnected indicator
+            button.attributedTitle = NSAttributedString(string: "Offline", attributes: [
+                .font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize),
+                .foregroundColor: NSColor.white
+            ])
+            return
+        }
+        
+        let down = showMaxSpeed ? maxDown : currentDown
+        let up = showMaxSpeed ? maxUp : currentUp
+        
+        // Create speed text (simpler now, no additional metrics)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        ]
+        let boldAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+        ]
+        
+        let speedText = NSMutableAttributedString()
+        speedText.append(NSAttributedString(
+            string: String(format: "%.1f", down),
+            attributes: attrs
+        ))
+        speedText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+        
+        speedText.append(NSAttributedString(
+            string: String(format: "%.1f", up),
+            attributes: attrs
+        ))
+        speedText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+        
+        // Add max mode indicator if needed
+        if showMaxSpeed {
+            speedText.append(NSAttributedString(string: " [max]", attributes: attrs))
+        }
+        
+        button.attributedTitle = speedText
+    }
+    
+    private func updateLatencyDisplay() {
+        // If latency is disabled or network is disconnected, remove the item
+        if !showLatency || !isNetworkConnected {
+            removeLatencyStatusItem()
+            return
+        }
+        
+        // Create item if needed
+        if latencyStatusItem == nil {
+            createLatencyStatusItem()
+        }
+        
+        // Exit if we don't have a valid button (after potential creation)
+        guard let button = latencyStatusItem?.button else { return }
+        
+        // Set appropriate attributes based on latency value
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        ]
+        
+        let latencyText: String
+        
+        if currentLatency < 0 {
+            latencyText = "∞ ms"
+            attrs[.foregroundColor] = NSColor.yellow
+        } else if currentLatency > 1000 {
+            latencyText = String(format: "%3.0fms", currentLatency)
+            attrs[.foregroundColor] = NSColor.yellow
+            attrs[.font] = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
+        } else {
+            latencyText = String(format: "%3.0fms", currentLatency)
+        }
+        
+        button.attributedTitle = NSAttributedString(string: latencyText, attributes: attrs)
+    }
+    
+    private func updateQualityDisplay() {
+        // Only update if quality metrics are enabled
+        if !showPacketLoss && !showJitter || !isNetworkConnected {
+            removeQualityStatusItem()
+            return
+        }
+        
+        // Create item if needed
+        if qualityStatusItem == nil {
+            createQualityStatusItem()
+        }
+        
+        guard let button = qualityStatusItem?.button else { return }
+        
+        let qualityText = NSMutableAttributedString()
+        
+        // Add packet loss if enabled
+        if showPacketLoss {
+            let safeLoss = min(max(currentPacketLoss, 0.0), 100.0)
+            var attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            ]
+            
+            if safeLoss > 10.0 {
+                attrs[.foregroundColor] = NSColor.yellow
+            } else if safeLoss > 5.0 {
+                attrs[.foregroundColor] = NSColor.yellow
+            }
+            
+            qualityText.append(NSAttributedString(
+                string: String(format: "L%.1f%%", safeLoss),
+                attributes: attrs
+            ))
+            
+            // Add separator if we'll also show jitter
+            if showJitter {
+                qualityText.append(NSAttributedString(string: " ", attributes: attrs))
+            }
+        }
+        
+        // Add jitter if enabled
+        if showJitter {
+            let safeJitter = max(currentJitter, 0.0)
+            var attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            ]
+            
+            if safeJitter > 50.0 {
+                attrs[.foregroundColor] = NSColor.yellow
+            } else if safeJitter > 20.0 {
+                attrs[.foregroundColor] = NSColor.yellow
+            }
+            
+            qualityText.append(NSAttributedString(
+                string: String(format: "J%.1f", safeJitter),
+                attributes: attrs
+            ))
+        }
+        
+        button.attributedTitle = qualityText
+    }
+    
+    private func removeLatencyStatusItem() {
+        if let item = latencyStatusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            latencyStatusItem = nil
+        }
+    }
+    
+    private func removeQualityStatusItem() {
+        if let item = qualityStatusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            qualityStatusItem = nil
+        }
+    }
 }
-
+    
 // Create and start the application
 let app = NSApplication.shared
 let delegate = AppDelegate()
