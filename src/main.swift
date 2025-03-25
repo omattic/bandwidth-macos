@@ -130,6 +130,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastScreenWidth: CGFloat = 0
     private var lastMenuBarItems: Int = 0
     
+    // Create enum to represent different status item types
+    private enum StatusItemType: Int {
+        case bandwidth = 0
+        case latency = 1
+        case quality = 2
+    }
+    
+    // Add a dictionary to map menus to their types
+    private var menuTypeMap = [NSMenu: StatusItemType]()
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Move the NetworkMonitor initialization to the top
         networkMonitor = NetworkMonitor()
@@ -524,17 +534,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleLatency() {
         showLatency.toggle()
         
-        // Update the menu item state
-        if let modeMenu = speedStatusItem.menu?.items.first(where: { $0.title == "Mode" })?.submenu,
-           let latencyItem = modeMenu.items.first(where: { $0.keyEquivalent == "p" }) {
-            latencyItem.state = showLatency ? .on : .off
-        }
+        // Update the menu item state in all menus
+        updateMenuItemState(keyEquivalent: "p", state: showLatency ? .on : .off)
         
         // Add or remove the latency status item
         if showLatency {
-            if latencyStatusItem == nil {
-                // Pass the shared menu when recreating
-                createLatencyStatusItem(withMenu: speedStatusItem.menu!)
+            if (latencyStatusItem == nil) {
+                // Create latency menu and status item
+                let latencyMenu = createMenu(for: .latency)
+                createLatencyStatusItem(withMenu: latencyMenu)
             }
             
             // Schedule measurement
@@ -1315,20 +1323,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.attributedTitle = initialText
         }
         
-        // First create the shared menu
-        let menu = createSharedMenu()
+        // Create individual menus for each status item
+        let bandwidthMenu = createMenu(for: .bandwidth)
+        let latencyMenu = createMenu(for: .latency)
+        let qualityMenu = createMenu(for: .quality)
         
-        // Assign the menu directly to the speed item
-        speedStatusItem.menu = menu
+        // Assign menus to status items
+        speedStatusItem.menu = bandwidthMenu
         
         // Create separate item for latency if enabled
         if showLatency {
-            createLatencyStatusItem(withMenu: menu)
+            createLatencyStatusItem(withMenu: latencyMenu)
         }
         
         // Create separate item for network quality if enabled
         if showPacketLoss || showJitter {
-            createQualityStatusItem(withMenu: menu)
+            createQualityStatusItem(withMenu: qualityMenu)
         }
     }
     
@@ -1342,7 +1352,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             button.attributedTitle = NSAttributedString(string: "∞ ms", attributes: attrs)
             
-            // Directly assign the shared menu to this item
+            // No need for action method anymore
+            // button.action = #selector(statusItemClicked(_:))
+            // button.target = self
+            
+            // Directly assign the menu
             latencyStatusItem?.menu = menu
         }
     }
@@ -1360,16 +1374,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
             
-            // Directly assign the shared menu to this item
+            // No need for action method anymore
+            // button.action = #selector(statusItemClicked(_:))
+            // button.target = self
+            
+            // Directly assign the menu
             qualityStatusItem?.menu = menu
         }
     }
     
-    // Create a shared menu for all status items
-    private func createSharedMenu() -> NSMenu {
+    // Create individual menus for each status item type
+    private func createMenu(for type: StatusItemType) -> NSMenu {
         let menu = NSMenu()
         
-        // Mode switching group
+        // Set delegate and tag to identify menu type
+        menu.delegate = self
+        menu.autoenablesItems = true
+        
+        // Store the type in our dictionary instead of using representedObject
+        menuTypeMap[menu] = type
+        
+        // Create menu items based on status item type
         let modeGroup = NSMenu()
         let modeItem = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
         modeItem.submenu = modeGroup
@@ -1612,8 +1637,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             qualityStatusItem = nil
         }
     }
+    
+    // Helper method to update menu item states in all menus
+    private func updateMenuItemState(keyEquivalent: String, state: NSControl.StateValue) {
+        // Update the state in all three menus
+        [speedStatusItem.menu, latencyStatusItem?.menu, qualityStatusItem?.menu].forEach { menu in
+            if let modeMenu = menu?.items.first(where: { $0.title == "Mode" })?.submenu,
+               let item = modeMenu.items.first(where: { $0.keyEquivalent == keyEquivalent }) {
+                item.state = state
+            }
+        }
+    }
 }
     
+// MARK: - NSMenuDelegate methods
+
+// Conform to NSMenuDelegate to customize menu before it opens
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        // Remove any previous header
+        if let firstItem = menu.items.first, firstItem.isSeparatorItem == false && firstItem.isEnabled == false {
+            menu.removeItem(at: 0)
+        }
+        
+        // Determine which item was clicked based on our menuTypeMap
+        let itemType = menuTypeMap[menu] ?? .bandwidth
+        
+        var headerTitle: String
+        
+        switch itemType {
+        case .bandwidth:
+            headerTitle = showMaxSpeed ? "Max Bandwidth" : "Bandwidth"
+        case .latency:
+            headerTitle = "Latency (Ping Time)"
+        case .quality:
+            if showPacketLoss && showJitter {
+                headerTitle = "Network Quality"
+            } else if showPacketLoss {
+                headerTitle = "Packet Loss"
+            } else {
+                headerTitle = "Jitter"
+            }
+        }
+        
+        // Add the header as a disabled menu item
+        let headerItem = NSMenuItem(title: headerTitle, action: nil, keyEquivalent: "")
+        headerItem.isEnabled = false
+        
+        // Apply custom attributes to make it stand out
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: NSColor.gray
+        ]
+        headerItem.attributedTitle = NSAttributedString(string: headerTitle, attributes: attributes)
+        
+        // Insert at the beginning of the menu
+        menu.insertItem(headerItem, at: 0)
+        
+        // Add a separator after the header
+        menu.insertItem(NSMenuItem.separator(), at: 1)
+    }
+}
+
 // Create and start the application
 let app = NSApplication.shared
 let delegate = AppDelegate()
