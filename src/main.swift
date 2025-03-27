@@ -141,6 +141,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuTypeMap = [NSMenu: StatusItemType]()
     
     private var totalTrafficGB: Double = 0.0  // New property for tracking total traffic used
+    // Add traffic status item property
+    private var trafficStatusItem: NSStatusItem?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Move the NetworkMonitor initialization to the top
@@ -601,6 +603,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.updateSpeedDisplay(currentDown: currentDown, currentUp: currentUp, maxDown: maxDown, maxUp: maxUp)
                     self.updateLatencyDisplay()
                     self.updateQualityDisplay()
+                    // Update traffic display after other metrics
+                    self.updateTrafficDisplay()
                 }
             }
         } else {
@@ -611,6 +615,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                          maxDown: 0.0, maxUp: 0.0)
                 self.updateLatencyDisplay()
                 self.updateQualityDisplay()
+                // Also update traffic display even if offline
+                self.updateTrafficDisplay()
             }
         }
     }
@@ -1343,6 +1349,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if showPacketLoss || showJitter {
             createQualityStatusItem(withMenu: qualityMenu)
         }
+        
+        // Create traffic status item to display total traffic used
+        if let menu = speedStatusItem.menu {
+            createTrafficStatusItem(withMenu: menu)
+        }
     }
     
     private func createLatencyStatusItem(withMenu menu: NSMenu) {
@@ -1381,6 +1392,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Directly assign the menu
             qualityStatusItem?.menu = menu
         }
+    }
+    
+    // New helper to create the traffic status item
+    private func createTrafficStatusItem(withMenu menu: NSMenu) {
+        trafficStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = trafficStatusItem?.button {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            ]
+            let text = String(format: "Traffic: %.2fGB", totalTrafficGB)
+            button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
+        }
+        trafficStatusItem?.menu = menu
+    }
+    
+    // New helper to update the traffic display
+    private func updateTrafficDisplay() {
+        guard let button = trafficStatusItem?.button else { return }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        ]
+        let text = String(format: "Traffic: %.2fGB", totalTrafficGB)
+        button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
     }
     
     // Create individual menus for each status item type
