@@ -140,6 +140,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Add a dictionary to map menus to their types
     private var menuTypeMap = [NSMenu: StatusItemType]()
     
+    private var totalTrafficGB: Double = 0.0  // New property for tracking total traffic used
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Move the NetworkMonitor initialization to the top
         networkMonitor = NetworkMonitor()
@@ -591,11 +593,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Use the speedMonitor to get actual bandwidth values
             speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp in
                 guard let self = self else { return }
-                
+                // Increment traffic counter (assumes update interval is 2 sec)
+                let trafficIncrement = (currentDown + currentUp) * 0.00025  // (GB) estimate
+                self.totalTrafficGB += trafficIncrement
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
-                    self.updateSpeedDisplay(currentDown: currentDown, currentUp: currentUp, 
-                                           maxDown: maxDown, maxUp: maxUp)
+                    self.updateSpeedDisplay(currentDown: currentDown, currentUp: currentUp, maxDown: maxDown, maxUp: maxUp)
                     self.updateLatencyDisplay()
                     self.updateQualityDisplay()
                 }
@@ -1062,7 +1065,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fullWidth = measureWidth(of: fullText)
         
         // If there's enough space, show everything
-        if fullWidth < widthConstraintThreshold {
+        if (fullWidth < widthConstraintThreshold) {
             text.append(fullText)
             isWidthConstrained = false
             
@@ -1352,9 +1355,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             button.attributedTitle = NSAttributedString(string: "∞ ms", attributes: attrs)
             
-            // No need for action method anymore
-            // button.action = #selector(statusItemClicked(_:))
-            // button.target = self
             
             // Directly assign the menu
             latencyStatusItem?.menu = menu
