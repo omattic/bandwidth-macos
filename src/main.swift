@@ -1178,7 +1178,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Add ellipsis if we're hiding metrics
         let finalText = NSMutableAttributedString()
-        if willHideMetrics {
+        if (willHideMetrics) {
             finalText.append(ellipsisText)
         }
         
@@ -1404,7 +1404,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let text = String(format: "Traffic: %.2fGB", totalTrafficGB)
             button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
         }
-        trafficStatusItem?.menu = menu
+        // Removed menu assignment to avoid interference:
+        // trafficStatusItem?.menu = menu
+        // Set a fixed length to ensure the traffic status item is visible
+        trafficStatusItem?.length = 130
     }
     
     // New helper to update the traffic display
