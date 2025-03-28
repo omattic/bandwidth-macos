@@ -10,6 +10,7 @@ struct PreferenceKeys {
     static let showPacketLoss = "showPacketLoss"
     static let showJitter = "showJitter"
     static let showNetworkQuality = "showNetworkQuality"
+    static let showTotalTraffic = "showTotalTraffic"  // NEW
 }
 
 // Improved NetworkMonitor with better thread safety and error handling
@@ -116,6 +117,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var showPacketLoss = true // Default to showing packet loss
     private var showJitter = true // Default to showing jitter
     private var networkMonitor: NetworkMonitor!
+    private var showTotalTraffic = true  // NEW
     
     // Add adaptive display properties
     private var adaptiveDisplayEnabled = true // Always enabled now
@@ -197,7 +199,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         modeItem.submenu = modeGroup
         
         let liveMenuItem = NSMenuItem(title: "Live Bandwidth", action: #selector(setLiveMode), keyEquivalent: "l")
-        let maxMenuItem = NSMenuItem(title: "Show Max Bandwidth", action: #selector(setMaxMode), keyEquivalent: "m")
+        let maxMenuItem = NSMenuItem(title: "Max Bandwidth", action: #selector(setMaxMode), keyEquivalent: "m")
         let resetMaxMenuItem = NSMenuItem(title: "Reset Max", action: #selector(resetMaxSpeed), keyEquivalent: "r")
         modeGroup.addItem(liveMenuItem)
         modeGroup.addItem(maxMenuItem)
@@ -218,6 +220,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let jitterMenuItem = NSMenuItem(title: "Show Jitter", action: #selector(toggleJitter), keyEquivalent: "j")
         jitterMenuItem.state = showJitter ? .on : .off
         modeGroup.addItem(jitterMenuItem)
+        
+        // NEW: Add "Show Total Traffic" toggle with key equivalent "g"
+        modeGroup.addItem(NSMenuItem.separator())
+        let trafficMenuItem = NSMenuItem(title: "Show Total Traffic", action: #selector(toggleTraffic), keyEquivalent: "g")
+        trafficMenuItem.state = showTotalTraffic ? .on : .off
+        modeGroup.addItem(trafficMenuItem)
         
         // Remove Adaptive Display toggle - feature is always enabled now
         
@@ -329,8 +337,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showPacketLoss = defaults.object(forKey: PreferenceKeys.showPacketLoss) as? Bool ?? true
         showJitter = defaults.object(forKey: PreferenceKeys.showJitter) as? Bool ?? true
         showNetworkQuality = defaults.object(forKey: PreferenceKeys.showNetworkQuality) as? Bool ?? true
+        showTotalTraffic = defaults.object(forKey: PreferenceKeys.showTotalTraffic) as? Bool ?? true  // NEW
         
-        print("📋 Loaded preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter)")
+        print("📋 Loaded preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter), Traffic=\(showTotalTraffic)")
     }
     
     // Save current preferences to UserDefaults
@@ -342,12 +351,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         defaults.set(showPacketLoss, forKey: PreferenceKeys.showPacketLoss)
         defaults.set(showJitter, forKey: PreferenceKeys.showJitter)
         defaults.set(showNetworkQuality, forKey: PreferenceKeys.showNetworkQuality)
+        defaults.set(showTotalTraffic, forKey: PreferenceKeys.showTotalTraffic)  // NEW
         // Remove adaptive display setting - it's always enabled now
         
         // Synchronize to ensure data is saved immediately
         defaults.synchronize()
         
-        print("💾 Saved preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter)")
+        print("💾 Saved preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter), Traffic=\(showTotalTraffic)")
     }
     
     // Start a timer to check if we should switch back to live mode
@@ -427,6 +437,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Update the display immediately
         updateSpeedOnly()
         savePreferences() // Save the new preference
+    }
+    
+    @objc private func toggleTraffic() {
+        showTotalTraffic.toggle()
+        updateMenuItemState(keyEquivalent: "g", state: showTotalTraffic ? .on : .off)
+        if showTotalTraffic {
+            if trafficStatusItem == nil, let menu = speedStatusItem.menu {
+                createTrafficStatusItem(withMenu: menu)
+            }
+        } else {
+            if let item = trafficStatusItem {
+                NSStatusBar.system.removeStatusItem(item)
+                trafficStatusItem = nil
+            }
+        }
+        updateSpeedOnly()
+        savePreferences()
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -1351,8 +1378,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         // Create traffic status item to display total traffic used
-        if let menu = speedStatusItem.menu {
-            createTrafficStatusItem(withMenu: menu)
+        if let menu = speedStatusItem.menu, showTotalTraffic {
+            createTrafficStatusItem(withMenu: menu)  // NEW: Only create if enabled
         }
     }
     
@@ -1401,13 +1428,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             ]
-            let text = String(format: "Traffic: %.2fGB", totalTrafficGB)
+            let text = String(format: "%.2fGB", totalTrafficGB)
             button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
         }
         // Removed menu assignment to avoid interference:
         // trafficStatusItem?.menu = menu
         // Set a fixed length to ensure the traffic status item is visible
-        trafficStatusItem?.length = 130
+        // trafficStatusItem?.length = 130
     }
     
     // New helper to update the traffic display
@@ -1416,7 +1443,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         ]
-        let text = String(format: "Traffic: %.2fGB", totalTrafficGB)
+        let text = String(format: "%.2fGB", totalTrafficGB)
         button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
     }
     
@@ -1437,7 +1464,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         modeItem.submenu = modeGroup
         
         let liveMenuItem = NSMenuItem(title: "Live Bandwidth", action: #selector(setLiveMode), keyEquivalent: "l")
-        let maxMenuItem = NSMenuItem(title: "Show Max Bandwidth", action: #selector(setMaxMode), keyEquivalent: "m")
+        let maxMenuItem = NSMenuItem(title: "Max Bandwidth", action: #selector(setMaxMode), keyEquivalent: "m")
         let resetMaxMenuItem = NSMenuItem(title: "Reset Max", action: #selector(resetMaxSpeed), keyEquivalent: "r")
         modeGroup.addItem(liveMenuItem)
         modeGroup.addItem(maxMenuItem)
@@ -1449,15 +1476,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         latencyMenuItem.state = showLatency ? .on : .off
         modeGroup.addItem(latencyMenuItem)
         
-        // Add Packet Loss toggle option with fixed key equivalent
         let packetLossMenuItem = NSMenuItem(title: "Show Packet Loss", action: #selector(togglePacketLoss), keyEquivalent: "k")
         packetLossMenuItem.state = showPacketLoss ? .on : .off
         modeGroup.addItem(packetLossMenuItem)
         
-        // Add Jitter toggle option
         let jitterMenuItem = NSMenuItem(title: "Show Jitter", action: #selector(toggleJitter), keyEquivalent: "j")
         jitterMenuItem.state = showJitter ? .on : .off
         modeGroup.addItem(jitterMenuItem)
+        
+        // NEW: Add "Show Total Traffic" toggle with key equivalent "g"
+        modeGroup.addItem(NSMenuItem.separator())
+        let trafficMenuItem = NSMenuItem(title: "Show Total Traffic", action: #selector(toggleTraffic), keyEquivalent: "g")
+        trafficMenuItem.state = showTotalTraffic ? .on : .off
+        modeGroup.addItem(trafficMenuItem)
         
         menu.addItem(modeItem)
         menu.addItem(NSMenuItem.separator())
