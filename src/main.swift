@@ -10,7 +10,8 @@ struct PreferenceKeys {
     static let showPacketLoss = "showPacketLoss"
     static let showJitter = "showJitter"
     static let showNetworkQuality = "showNetworkQuality"
-    static let showTotalTraffic = "showTotalTraffic"  // NEW
+    static let showTotalTraffic = "showTotalTraffic"
+    static let totalTrafficValue = "totalTrafficValue"  // NEW: Key for storing the total traffic value
 }
 
 // Improved NetworkMonitor with better thread safety and error handling
@@ -227,7 +228,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         trafficMenuItem.state = showTotalTraffic ? .on : .off
         modeGroup.addItem(trafficMenuItem)
         
-        // Remove Adaptive Display toggle - feature is always enabled now
+        // NEW: Add "Reset Total Traffic" option with key equivalent "e" (not "r" which is already used for "Reset Max")
+        let resetTrafficMenuItem = NSMenuItem(title: "Reset Total Traffic", action: #selector(resetTotalTraffic), keyEquivalent: "e")
+        modeGroup.addItem(resetTrafficMenuItem)
         
         menu.addItem(modeItem)
         menu.addItem(NSMenuItem.separator())
@@ -315,16 +318,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         // Also start the max mode timeout timer
-        startMaxModeTimeoutTimer()
-        
-        // Start network quality monitoring with a delay
-        print("📱 Starting network quality monitoring")
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
             guard let self = self else { return }
             self.networkQualityMonitor.startMonitoring()
         }
         
-        // Don't load adaptive display preference - always enabled
+        // Start with saved total traffic count instead of resetting to 0
+        totalTrafficGB = UserDefaults.standard.double(forKey: PreferenceKeys.totalTrafficValue)
     }
     
     // Load user preferences from UserDefaults
@@ -337,9 +337,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showPacketLoss = defaults.object(forKey: PreferenceKeys.showPacketLoss) as? Bool ?? true
         showJitter = defaults.object(forKey: PreferenceKeys.showJitter) as? Bool ?? true
         showNetworkQuality = defaults.object(forKey: PreferenceKeys.showNetworkQuality) as? Bool ?? true
-        showTotalTraffic = defaults.object(forKey: PreferenceKeys.showTotalTraffic) as? Bool ?? true  // NEW
+        showTotalTraffic = defaults.object(forKey: PreferenceKeys.showTotalTraffic) as? Bool ?? true
         
-        print("📋 Loaded preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter), Traffic=\(showTotalTraffic)")
+        // Load the total traffic value with a default of 0.0
+        totalTrafficGB = defaults.double(forKey: PreferenceKeys.totalTrafficValue)
+        
+        print("📋 Loaded preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter), Traffic=\(showTotalTraffic), TrafficValue=\(totalTrafficGB)GB")
     }
     
     // Save current preferences to UserDefaults
@@ -351,266 +354,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         defaults.set(showPacketLoss, forKey: PreferenceKeys.showPacketLoss)
         defaults.set(showJitter, forKey: PreferenceKeys.showJitter)
         defaults.set(showNetworkQuality, forKey: PreferenceKeys.showNetworkQuality)
-        defaults.set(showTotalTraffic, forKey: PreferenceKeys.showTotalTraffic)  // NEW
-        // Remove adaptive display setting - it's always enabled now
+        defaults.set(showTotalTraffic, forKey: PreferenceKeys.showTotalTraffic)
         
-        // Synchronize to ensure data is saved immediately
+        // Save the current total traffic value - using exactly the current value in memory
+        defaults.set(totalTrafficGB, forKey: PreferenceKeys.totalTrafficValue)
+        
+        // Ensure values are written to disk immediately
         defaults.synchronize()
         
-        print("💾 Saved preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter), Traffic=\(showTotalTraffic)")
-    }
-    
-    // Start a timer to check if we should switch back to live mode
-    private func startMaxModeTimeoutTimer() {
-        // Cancel any existing timer
-        maxModeTimer?.invalidate()
-        
-        // Create a new timer that checks every 10 seconds
-        maxModeTimer = Timer.scheduledTimer(
-            timeInterval: 10.0,
-            target: self,
-            selector: #selector(checkMaxModeTimeout),
-            userInfo: nil,
-            repeats: true
-        )
-    }
-    
-    // Check if we should switch back to live mode after a timeout
-    @objc private func checkMaxModeTimeout() {
-        // Only check if we're in max mode and not currently testing
-        guard showMaxSpeed && !isTestingSpeed else { return }
-        
-        // Check if we've been in max mode for more than 1 minute
-        if let startTime = maxModeStartTime,
-           Date().timeIntervalSince(startTime) > 60.0 {
-            // Switch back to live mode
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                print("Auto-switching to live mode after 1 minute in max mode")
-                self.setLiveMode()
-            }
-        }
-    }
-    
-    // Toggle methods for network quality display
-    @objc private func toggleNetworkQuality() {
-        showNetworkQuality.toggle()
-        
-        // Update the menu item state
-        if let menu = speedStatusItem.menu,
-           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
-           let qualityItem = modeMenu.items.first(where: { $0.keyEquivalent == "q" }) {
-            qualityItem.state = showNetworkQuality ? .on : .off
-        }
-        
-        // Update the display immediately
-        updateSpeedOnly()
-        savePreferences() // Save the new preference
-    }
-    
-    // Add toggle methods for packet loss and jitter
-    @objc private func togglePacketLoss() {
-        showPacketLoss.toggle()
-        
-        // Update the menu item state - fix the key equivalent to match the new one
-        if let menu = speedStatusItem.menu,
-           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
-           let packetLossItem = modeMenu.items.first(where: { $0.keyEquivalent == "k" }) {
-            packetLossItem.state = showPacketLoss ? .on : .off
-        }
-        
-        // Update the display immediately
-        updateSpeedOnly()
-        savePreferences() // Save the new preference
-    }
-    
-    @objc private func toggleJitter() {
-        showJitter.toggle()
-        
-        // Update the menu item state
-        if let menu = speedStatusItem.menu,
-           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
-           let jitterItem = modeMenu.items.first(where: { $0.keyEquivalent == "j" }) {
-            jitterItem.state = showJitter ? .on : .off
-        }
-        
-        // Update the display immediately
-        updateSpeedOnly()
-        savePreferences() // Save the new preference
-    }
-    
-    @objc private func toggleTraffic() {
-        showTotalTraffic.toggle()
-        updateMenuItemState(keyEquivalent: "g", state: showTotalTraffic ? .on : .off)
-        if showTotalTraffic {
-            if trafficStatusItem == nil, let menu = speedStatusItem.menu {
-                createTrafficStatusItem(withMenu: menu)
-            }
-        } else {
-            if let item = trafficStatusItem {
-                NSStatusBar.system.removeStatusItem(item)
-                trafficStatusItem = nil
-            }
-        }
-        updateSpeedOnly()
-        savePreferences()
-    }
-    
-    func applicationWillTerminate(_ notification: Notification) {
-        // Save preferences before termination
-        savePreferences()
-        
-        // Properly cleanup all resources
-        networkMonitor.stopMonitoring() // Stop this first
-        
-        timer?.invalidate()
-        timer = nil
-        
-        maxModeTimer?.invalidate()
-        maxModeTimer = nil
-        
-        // Stop network quality monitoring safely
-        networkQualityMonitor.stopMonitoring()
-        
-        // Clean up our observers
-        if let observer = screenObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        statusBarWatcher?.invalidate()
-    }
-
-    @objc private func updateSpeedAndLatency() {
-        // Safer approach - catch any exceptions
-        do {
-            // First update speed which shouldn't require network
-            updateSpeed()
-            
-            // Only attempt to measure latency if enabled
-            if showLatency {
-                // Set to error state by default
-                currentLatency = -1
-                
-                if isNetworkAvailable() {
-                    // Only try to measure if network appears available
-                    try measureLatency()
-                } else {
-                    // Already set latency to error state above
-                    updateSpeed() // Update UI to reflect error state
-                }
-            }
-        } catch {
-            print("Exception in updateSpeedAndLatency: \(error.localizedDescription)")
-            // Make sure UI is updated even if there's an error
-            currentLatency = -1
-            updateSpeed()
-        }
-    }
-    
-    // Check if network is available - completely rewritten to use modern APIs
-    private func isNetworkAvailable() -> Bool {
-        return networkMonitor.checkIsConnected()
-    }
-    
-    // Measure network latency using a simple HTTP request with improved error handling
-    private func measureLatency() throws {
-        // Guard against no network early
-        guard isNetworkAvailable() else {
-            currentLatency = -1
-            return
-        }
-        
-        // Use a more reliable and lightweight URL
-        guard let url = URL(string: "https://speed.cloudflare.com/") else { return }
-        
-        // Configure a session with no caching and very defensive settings
-        let config = URLSessionConfiguration.ephemeral
-        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        config.timeoutIntervalForRequest = 3.0 // Even shorter timeout
-        config.timeoutIntervalForResource = 5.0
-        config.waitsForConnectivity = false // Don't wait for connectivity
-        
-        let session = URLSession(configuration: config)
-        let startTime = Date()
-        
-        // Create task but don't start it yet
-        let task = session.dataTask(with: url) { [weak self] data, response, error in
-            guard let self = self else { return }
-            
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                
-                if let error = error {
-                    // Error occurred
-                    self.currentLatency = -1
-                    print("Latency error: \(error.localizedDescription)")
-                } else if let httpResponse = response as? HTTPURLResponse, 
-                          httpResponse.statusCode == 200 {
-                    // Success case
-                    let elapsed = Date().timeIntervalSince(startTime) * 1000
-                    self.currentLatency = elapsed
-                } else {
-                    // Unexpected response
-                    self.currentLatency = -2
-                }
-                
-                // Update the display
-                self.updateSpeed()
-            }
-        }
-        
-        // Resume task without unreachable catch block
-        task.resume()
-    }
-    
-    @objc private func toggleLatency() {
-        showLatency.toggle()
-        
-        // Update the menu item state in all menus
-        updateMenuItemState(keyEquivalent: "p", state: showLatency ? .on : .off)
-        
-        // Add or remove the latency status item
-        if showLatency {
-            if (latencyStatusItem == nil) {
-                // Create latency menu and status item
-                let latencyMenu = createMenu(for: .latency)
-                createLatencyStatusItem(withMenu: latencyMenu)
-            }
-            
-            // Schedule measurement
-            if self.isNetworkConnected {
-                self.measureLatencySafely()
-            }
-        } else {
-            removeLatencyStatusItem()
-        }
-        
-        savePreferences() // Save the new preference
-        updateSpeedOnly() // Update the display
-    }
-    
-    @objc private func toggleMode() {
-        showMaxSpeed.toggle()
-        
-        guard let menu = speedStatusItem.menu else { return }
-        let liveItem = menu.items.first { $0.keyEquivalent == "l" }
-        let maxItem = menu.items.first { $0.keyEquivalent == "m" }
-        let resetItem = menu.items.first { $0.keyEquivalent == "r" }
-        
-        // Toggle visibility
-        liveItem?.isHidden = !showMaxSpeed
-        maxItem?.isHidden = showMaxSpeed
-        resetItem?.isHidden = !showMaxSpeed
-        
-        // Update display immediately
-        updateSpeed()
-    }
-    
-    @objc private func resetMaxSpeed() {
-        speedMonitor.resetMaxSpeeds()
-    }
-    
-    @objc private func updateSpeed() {
-        updateSpeedOnly()
+        print("💾 Saved preferences: Max=\(showMaxSpeed), Latency=\(showLatency), Loss=\(showPacketLoss), Jitter=\(showJitter), Traffic=\(showTotalTraffic), TrafficValue=\(totalTrafficGB)GB")
     }
     
     @objc private func updateSpeedOnly() {
@@ -619,18 +371,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // If network is available, measure actual speeds
         if self.isNetworkConnected {
-            // Use the speedMonitor to get actual bandwidth values
-            speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp in
-                guard let self = self else { return }
-                // Increment traffic counter (assumes update interval is 2 sec)
-                let trafficIncrement = (currentDown + currentUp) * 0.00025  // (GB) estimate
-                self.totalTrafficGB += trafficIncrement
+            // Add defensive error handling around speedMonitor.measureSpeed
+            do {
+                // Use the speedMonitor to get actual bandwidth values
+                speedMonitor.measureSpeed { [weak self] currentDown, currentUp, maxDown, maxUp, currentLatency, avgLatency in
+                    guard let self = self else { return }
+                    
+                    // Add defensive bounds checking
+                    let safeCurrentDown = max(0, isFinite(currentDown) ? currentDown : 0)
+                    let safeCurrentUp = max(0, isFinite(currentUp) ? currentUp : 0)
+                    let safeMaxDown = max(0, isFinite(maxDown) ? maxDown : 0)
+                    let safeMaxUp = max(0, isFinite(maxUp) ? maxUp : 0)
+                    
+                    // Safely increment traffic counter (assumes update interval is 2 sec)
+                    if safeCurrentDown >= 0 && safeCurrentUp >= 0 {
+                        let trafficIncrement = (safeCurrentDown + safeCurrentUp) * 0.00025  // (GB) estimate
+                        if trafficIncrement >= 0 && trafficIncrement < 1000 { // Sanity check
+                            self.totalTrafficGB += trafficIncrement
+                            
+                            // Save traffic value periodically (not every time to reduce disk I/O)
+                            // Only save every ~60 seconds (30 updates at 2-sec intervals) - less frequent saves
+                            if Int.random(in: 0...29) == 0 {
+                                UserDefaults.standard.set(self.totalTrafficGB, forKey: PreferenceKeys.totalTrafficValue)
+                            }
+                        }
+                    }
+                    
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        self.updateSpeedDisplay(currentDown: safeCurrentDown, 
+                                                currentUp: safeCurrentUp, 
+                                                maxDown: safeMaxDown, 
+                                                maxUp: safeMaxUp)
+                        self.updateLatencyDisplay()
+                        self.updateQualityDisplay()
+                        // Update traffic display after other metrics
+                        self.updateTrafficDisplay()
+                    }
+                }
+            } catch {
+                // Handle errors from measureSpeed
+                print("Error measuring speed: \(error.localizedDescription)")
+                
+                // Update UI with zeros on error
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
-                    self.updateSpeedDisplay(currentDown: currentDown, currentUp: currentUp, maxDown: maxDown, maxUp: maxUp)
+                    self.updateSpeedDisplay(currentDown: 0.0, currentUp: 0.0, maxDown: 0.0, maxUp: 0.0)
                     self.updateLatencyDisplay()
                     self.updateQualityDisplay()
-                    // Update traffic display after other metrics
                     self.updateTrafficDisplay()
                 }
             }
@@ -648,162 +436,221 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    @objc private func startQuickTest() {
-        startSpeedTest(size: .medium, type: .combinedSerial)
+    // Add a helper function to check if a Double is finite
+    private func isFinite(_ value: Double) -> Bool {
+        return value.isFinite && !value.isNaN
     }
     
-    @objc private func startDownloadTest_small() { startSpeedTest(size: SpeedTest.TestSize.small, type: SpeedTest.TestType.download) }
-    @objc private func startDownloadTest_medium() { startSpeedTest(size: SpeedTest.TestSize.medium, type: SpeedTest.TestType.download) }
-    @objc private func startDownloadTest_large() { startSpeedTest(size: SpeedTest.TestSize.large, type: SpeedTest.TestType.download) }
-    
-    @objc private func startUploadTest_small() { startSpeedTest(size: SpeedTest.TestSize.small, type: SpeedTest.TestType.upload) }
-    @objc private func startUploadTest_medium() { startSpeedTest(size: SpeedTest.TestSize.medium, type: SpeedTest.TestType.upload) }
-    @objc private func startUploadTest_large() { startSpeedTest(size: SpeedTest.TestSize.large, type: SpeedTest.TestType.upload) }
-    
-    @objc private func startCombinedSerialTest_small() { startSpeedTest(size: .small, type: .combinedSerial) }
-    @objc private func startCombinedSerialTest_medium() { startSpeedTest(size: .medium, type: .combinedSerial) }
-    @objc private func startCombinedSerialTest_large() { startSpeedTest(size: .large, type: .combinedSerial) }
-    
-    @objc private func startCombinedParallelTest_small() { startSpeedTest(size: .small, type: .combinedParallel) }
-    @objc private func startCombinedParallelTest_medium() { startSpeedTest(size: .medium, type: .combinedParallel) }
-    @objc private func startCombinedParallelTest_large() { startSpeedTest(size: .large, type: .combinedParallel) }
-    
-    private func startSpeedTest(size: SpeedTest.TestSize, type: SpeedTest.TestType) {
-        guard !isTestingSpeed else { return }
-        isTestingSpeed = true
-        showMaxSpeed = true
-        maxModeStartTime = Date() // Set the max mode start time when starting a test
+    private func updateTrafficDisplay() {
+        guard let button = trafficStatusItem?.button else { return }
         
-        updateMenuState()
+        // Use more defensive formatting with bounds checking
+        let safeTraffic = max(0, min(totalTrafficGB, Double.greatestFiniteMagnitude / 2))
+        
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        ]
+        
+        // Format differently based on size to avoid very long numbers
+        let text: String
+        if safeTraffic < 0.01 {
+            text = "0.00GB"
+        } else if safeTraffic < 100 {
+            text = String(format: "%.2fGB", safeTraffic)
+        } else if safeTraffic < 1000 {
+            text = String(format: "%.1fGB", safeTraffic)
+        } else {
+            text = String(format: "%.1fTB", safeTraffic / 1000)
+        }
+        
+        button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
+    }
+    
+    @objc private func resetTotalTraffic() {
+        // Set value to exactly zero
+        totalTrafficGB = 0.0
+        
+        // Remove any stored value with removeObject instead of potentially setting a floating point value
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: PreferenceKeys.totalTrafficValue)
+        defaults.set(0.0, forKey: PreferenceKeys.totalTrafficValue)
+        
+        // Force synchronization
+        defaults.synchronize()
+        
+        // Update UI
+        updateTrafficDisplay()
+        
+        // Log the reset
+        print("🔄 Total traffic counter reset to 0.0 GB and persisted to disk")
+    }
+    
+    func applicationWillTerminate(_ notification: Notification) {
+        // Only save preferences through the proper method to avoid double-saving
+        savePreferences()
+        
+        // Clean up resources
+        networkMonitor.stopMonitoring() 
+        
+        timer?.invalidate()
+        timer = nil
+        
+        maxModeTimer?.invalidate()
+        maxModeTimer = nil
+        
+        // Stop network quality monitoring safely
+        networkQualityMonitor.stopMonitoring()
+        
+        // Clean up our observers
+        if let observer = screenObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        statusBarWatcher?.invalidate()
+    }
+    
+    // MARK: - UI Setup Methods
+    
+    private func setupStatusBarItems() {
+        // Create the main speed display item (highest priority, always visible if possible)
+        speedStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = speedStatusItem.button {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             ]
-            let text = "Testing speed..."
-            button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
+            let boldAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+            ]
+            
+            let initialText = NSMutableAttributedString()
+            initialText.append(NSAttributedString(string: "0.0", attributes: attrs))
+            initialText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
+            initialText.append(NSAttributedString(string: "0.0", attributes: attrs))
+            initialText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
+            
+            button.attributedTitle = initialText
         }
         
-        speedTest.startTest(size: size, type: type) { progress in
-            // Update progress if needed
-        } completion: { [weak self] result in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                self.isTestingSpeed = false
-                self.cancelTest = nil
-                self.updateMenuState()
-                self.updateSpeed()
+        // Create latency status item if enabled
+        if showLatency {
+            latencyStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            
+            if let button = latencyStatusItem?.button {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+                ]
+                button.attributedTitle = NSAttributedString(string: "-- ms", attributes: attrs)
+            }
+        }
+        
+        // Create quality status item if packet loss or jitter is enabled
+        if showPacketLoss || showJitter {
+            qualityStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            
+            if let button = qualityStatusItem?.button {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+                ]
+                button.attributedTitle = NSAttributedString(string: "0% loss", attributes: attrs)
+            }
+        }
+        
+        // Create separate item for traffic if enabled
+        if showTotalTraffic {
+            trafficStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            
+            if let button = trafficStatusItem?.button {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+                ]
+                button.attributedTitle = NSAttributedString(string: "0.00GB", attributes: attrs)
+            }
+        }
+    }
+    
+    private func updateLatencyDisplay() {
+        // First check if latency display should be shown
+        if showLatency {
+            // Create the latency item if it doesn't exist
+            if latencyStatusItem == nil {
+                latencyStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            }
+            
+            // Update the display
+            if let button = latencyStatusItem?.button {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+                ]
                 
-                // Reset the max mode start time - begins the 1-minute countdown
-                self.maxModeStartTime = Date()
+                let displayText: String
                 
-                // ...existing completion code...
-                switch type {
-                case .download, .upload:
-                    if let speed = result.download ?? result.upload {
-                        print("Test completed: \(speed) Mbps")
-                    } else {
-                        print("Test failed")
-                    }
-                case .combinedSerial, .combinedParallel:
-                    print("Download: \(result.download ?? -1) Mbps")
-                    print("Upload: \(result.upload ?? -1) Mbps")
+                if !isNetworkConnected {
+                    displayText = "-- ms"
+                } else if currentLatency < 0 {
+                    displayText = "-- ms"
+                } else {
+                    displayText = String(format: "%.0f ms", currentLatency)
                 }
+                
+                button.attributedTitle = NSAttributedString(string: displayText, attributes: attrs)
+            }
+        } else {
+            // Remove the status item if it exists
+            if let item = latencyStatusItem {
+                NSStatusBar.system.removeStatusItem(item)
+                latencyStatusItem = nil
             }
         }
-        
-        // Store cancel handler
-        cancelTest = { [weak self] in
-            self?.speedTest.cancelCurrentTest()
-            self?.isTestingSpeed = false
-            self?.updateMenuState()
-            self?.updateSpeed()  // Fix: use optional chaining here
-        }
     }
     
-    private func updateMenuState() {
-        guard let menu = speedStatusItem.menu else { return }
-        
-        // Update mode items
-        let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu
-        let liveItem = modeMenu?.items.first { $0.keyEquivalent == "l" }
-        let maxItem = modeMenu?.items.first { $0.keyEquivalent == "m" }
-        let resetItem = modeMenu?.items.first { $0.keyEquivalent == "r" }
-        
-        // Live is always enabled when not testing
-        liveItem?.isEnabled = !isTestingSpeed
-        
-        // Max and reset are enabled when in max mode and not testing
-        maxItem?.isEnabled = !isTestingSpeed
-        resetItem?.isEnabled = showMaxSpeed && !isTestingSpeed
-        
-        // Show current mode selection
-        liveItem?.state = !showMaxSpeed ? .on : .off
-        maxItem?.state = showMaxSpeed ? .on : .off
-        
-        // Update test items
-        let speedTestItem = menu.items.first { $0.title == "Speed Test" }
-        speedTestItem?.isEnabled = !isTestingSpeed
-        
-        // Show/hide cancel test
-        let cancelItem = menu.items.first { $0.keyEquivalent == "c" }
-        cancelItem?.isHidden = !isTestingSpeed
-    }
-    
-    @objc private func setLiveMode() {
-        showMaxSpeed = false
-        maxModeStartTime = nil // Clear the max mode start time
-        updateMenuState()
-        updateSpeed()
-        savePreferences() // Save the new preference
-    }
-    
-    @objc private func setMaxMode() {
-        showMaxSpeed = true
-        maxModeStartTime = Date() // Set the max mode start time
-        updateMenuState()
-        updateSpeed()
-        savePreferences() // Save the new preference
-    }
-    
-    @objc private func cancelCurrentTest() {
-        cancelTest?()
-    }
-    
-    // Safe wrapper for timer callback that won't crash
-    @objc private func safeUpdateSpeedAndLatency() {
-        autoreleasepool {
-            // No need for try-catch here if updateSpeedAndLatency doesn't throw
-            updateSpeedAndLatency()
-            // If it fails, UI will still show error state since we set 
-            // currentLatency = -1 as fallback in updateSpeedAndLatency
-        }
-    }
-    
-    // Start a separate timer for latency with defensive behavior
-    private func startSafeLatencyTimer() {
-        // Run on a background thread with a longer interval
-        // This lets us keep measuring bandwidth even if latency fails
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5.0) { [weak self] in
-            guard let self = self else { return }
-            
-            // Only try to measure latency if it's not in progress
-            if self.showLatency && !self.latencyMeasurementInProgress {
-                self.measureLatencySafely()
+    private func updateQualityDisplay() {
+        // Check if we should show packet loss or jitter
+        if showPacketLoss || showJitter {
+            // Create the quality item if it doesn't exist
+            if qualityStatusItem == nil {
+                qualityStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             }
             
-            // Recursively schedule the next measurement
-            self.startSafeLatencyTimer()
+            // Update the display
+            if let button = qualityStatusItem?.button {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+                ]
+                
+                let displayText: String
+                
+                if !isNetworkConnected {
+                    displayText = "-- loss"
+                } else {
+                    // Decide what to display based on what's enabled
+                    if showPacketLoss && showJitter {
+                        displayText = String(format: "%.1f%% / %.0fms", currentPacketLoss, currentJitter)
+                    } else if showPacketLoss {
+                        displayText = String(format: "%.1f%% loss", currentPacketLoss)
+                    } else if showJitter {
+                        displayText = String(format: "%.0fms jtr", currentJitter)
+                    } else {
+                        displayText = "--"
+                    }
+                }
+                
+                button.attributedTitle = NSAttributedString(string: displayText, attributes: attrs)
+            }
+        } else {
+            // Remove the status item if it exists and we're not showing either metric
+            if let item = qualityStatusItem {
+                NSStatusBar.system.removeStatusItem(item)
+                qualityStatusItem = nil
+            }
         }
     }
     
-    // Set up notification for network changes
+    // MARK: - Network Monitoring Methods
+    
     private func startMonitoringNetworkChanges() {
-        // Use the safer NWPathMonitor through our wrapper
         networkMonitor.startMonitoring { [weak self] isConnected in
             guard let self = self else { return }
             
-            // Already on main thread
             // Update network status safely
             self.isNetworkConnected = isConnected
             
@@ -827,64 +674,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        
-        // Also monitor system notifications as backup
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(possibleNetworkChange),
-            name: NSNotification.Name.NSSystemClockDidChange,
-            object: nil
-        )
-    }
-
-    // Handler for direct network reachability changes
-    private func handleNetworkChange(flags: SCNetworkReachabilityFlags) {
-        let isReachable = flags.contains(.reachable) && !flags.contains(.connectionRequired)
-        
-        // Update network status
-        self.isNetworkConnected = isReachable
-        
-        // Update UI immediately to show current state
-        if (!isReachable) {
-            self.currentLatency = -1
-        }
-        
-        // Update UI without blocking
-        DispatchQueue.main.async { [weak self] in
-            self?.updateSpeedOnly()
-        }
-        
-        // Only attempt a new measurement if network is available
-        if (isReachable && showLatency) {
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                self?.measureLatencySafely()
-            }
-        }
     }
     
-    // Generic system event that might indicate network change
-    @objc private func possibleNetworkChange(_ notification: Notification) {
-        // Check network status and update UI
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self else { return }
-            
-            let hasNetwork = self.checkNetworkSafely()
-            
-            DispatchQueue.main.async {
-                if (!hasNetwork) {
-                    self.currentLatency = -1
-                }
-                self.updateSpeedOnly()
-            }
-        }
-    }
-
-    // Super safe network check that will never crash - use modern API
     private func checkNetworkSafely() -> Bool {
         return networkMonitor.checkIsConnected()
     }
-
-    // Very safe latency measurement with no throwing/exceptions
+    
+    private func startSafeLatencyTimer() {
+        // Run on a background thread with a longer interval
+        // This lets us keep measuring bandwidth even if latency fails
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            guard let self = self else { return }
+            
+            // Only try to measure latency if it's not in progress
+            if self.showLatency && !self.latencyMeasurementInProgress {
+                self.measureLatencySafely()
+            }
+            
+            // Recursively schedule the next measurement
+            self.startSafeLatencyTimer()
+        }
+    }
+    
     private func measureLatencySafely() {
         // Don't start a new measurement if one is in progress
         guard !latencyMeasurementInProgress else { return }
@@ -893,7 +704,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard isNetworkConnected && checkNetworkSafely() else {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                self.currentLatency = -1 
+                self.currentLatency = -1
                 self.updateSpeedOnly()
             }
             return
@@ -955,599 +766,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         task.resume()
     }
     
-    // Measure width of attributed string
-    private func measureWidth(of attributedString: NSAttributedString) -> CGFloat {
-        let textStorage = NSTextStorage(attributedString: attributedString)
-        let textContainer = NSTextContainer(size: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
-        let layoutManager = NSLayoutManager()
-        
-        layoutManager.addTextContainer(textContainer)
-        textStorage.addLayoutManager(layoutManager)
-        
-        layoutManager.glyphRange(forBoundingRect: CGRect(origin: .zero, size: textContainer.size), in: textContainer)
-        return layoutManager.usedRect(for: textContainer).width
-    }
+    // MARK: - UI Update Methods
     
-    // Separate UI update method that doesn't do any network operations
-    private func updateStatusDisplay(currentDown: Double, currentUp: Double, maxDown: Double, maxUp: Double) {
-        guard let button = speedStatusItem.button else { return }
+    private func updateMenuState() {
+        guard let menu = speedStatusItem.menu else { return }
         
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        ]
-        let boldAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
-        ]
-        let warningAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-            .foregroundColor: NSColor.yellow
-        ]
-        let disconnectedAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold),
-            .foregroundColor: NSColor.white
-        ]
-        let latencyAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-            .foregroundColor: NSColor.white
-        ]
-        let highLatencyAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold),
-            .foregroundColor: NSColor.yellow
-        ]
-        let qualityAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-            .foregroundColor: NSColor.white
-        ]
-        let badQualityAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-            .foregroundColor: NSColor.yellow
-        ]
-        
-        // Change from 'let' to 'var' to make text mutable
-        var text = NSMutableAttributedString()
-        
-        // Check if network is disconnected - always show even when space is limited
-        if !isNetworkConnected {
-            // Show disconnected message
-            text.append(NSAttributedString(string: "Offline", attributes: disconnectedAttrs))
-            button.attributedTitle = text
-            return
-        }
-        
-        let down = showMaxSpeed ? maxDown : currentDown
-        let up = showMaxSpeed ? maxUp : currentUp  // Fix: was using currentDown incorrectly
-        
-        // First, build the complete text with all enabled metrics
-        let fullText = NSMutableAttributedString()
-        
-        // Add packet loss if enabled
-        if showPacketLoss {
-            let safeLoss = min(max(currentPacketLoss, 0.0), 100.0)
-            var plAttributes = qualityAttrs
-            if safeLoss > 10.0 {
-                plAttributes = badQualityAttrs
-            } else if safeLoss > 5.0 {
-                plAttributes = warningAttrs
-            }
+        // Update mode items
+        if let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu {
+            let liveItem = modeMenu.items.first { $0.keyEquivalent == "l" }
+            let maxItem = modeMenu.items.first { $0.keyEquivalent == "m" }
+            let resetItem = modeMenu.items.first { $0.keyEquivalent == "r" }
             
-            fullText.append(NSAttributedString(
-                string: String(format: "L%.1f%% ", safeLoss),
-                attributes: plAttributes
-            ))
-        }
-        
-        // Add jitter if enabled
-        if showJitter {
-            let safeJitter = max(currentJitter, 0.0)
-            var jitterAttributes = qualityAttrs
-            if safeJitter > 50.0 {
-                jitterAttributes = badQualityAttrs
-            } else if safeJitter > 20.0 {
-                jitterAttributes = warningAttrs
-            }
+            // Live is always enabled when not testing
+            liveItem?.isEnabled = !isTestingSpeed
             
-            fullText.append(NSAttributedString(
-                string: String(format: "J%.1f ", safeJitter),
-                attributes: jitterAttributes
-            ))
-        }
-        
-        // Add latency if enabled
-        if showLatency {
-            if currentLatency < 0 {
-                fullText.append(NSAttributedString(
-                    string: "∞ ms ",
-                    attributes: warningAttrs
-                ))
-            } else if currentLatency > 1000 {
-                fullText.append(NSAttributedString(
-                    string: String(format: "%3.0fms ", currentLatency),
-                    attributes: highLatencyAttrs
-                ))
-            } else {
-                fullText.append(NSAttributedString(
-                    string: String(format: "%3.0fms ", currentLatency),
-                    attributes: latencyAttrs
-                ))
-            }
-        }
-        
-        // Add the speed data (always shown)
-        let speedText = NSMutableAttributedString()
-        speedText.append(NSAttributedString(
-            string: String(format: "%6.1f", down),
-            attributes: attrs
-        ))
-        speedText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
-        
-        speedText.append(NSAttributedString(
-            string: String(format: "%6.1f", up),
-            attributes: attrs
-        ))
-        speedText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
-        
-        // Add max mode indicator if needed
-        if showMaxSpeed {
-            speedText.append(NSAttributedString(string: " [max]", attributes: attrs))
-        }
-        
-        // Add speed text to the full text
-        fullText.append(speedText)
-        
-        // Measure the width of the full text
-        let fullWidth = measureWidth(of: fullText)
-        
-        // If there's enough space, show everything
-        if (fullWidth < widthConstraintThreshold) {
-            text.append(fullText)
-            isWidthConstrained = false
+            // Max and reset are enabled when in max mode and not testing
+            maxItem?.isEnabled = !isTestingSpeed
+            resetItem?.isEnabled = showMaxSpeed && !isTestingSpeed
             
-            // Set the final display text and update length
-            button.attributedTitle = text
-            lastMeasuredWidth = measureWidth(of: text)
-            speedStatusItem.length = lastMeasuredWidth + 8  // Fix: speedStatusItem instead of statusItem
-            return
+            // Show current mode selection
+            liveItem?.state = !showMaxSpeed ? .on : .off
+            maxItem?.state = showMaxSpeed ? .on : .off
         }
         
-        // We need to be selective about what to show
-        isWidthConstrained = true
+        // Update test items
+        let speedTestItem = menu.items.first { $0.title == "Speed Test" }
+        speedTestItem?.isEnabled = !isTestingSpeed
         
-        // Start with just the speed text (always shown)
-        let adaptiveText = NSMutableAttributedString(attributedString: speedText)
-        var remainingWidth = widthConstraintThreshold - measureWidth(of: speedText)
-        
-        // Create a dictionary of metrics and their widths
-        var metricsToDisplay: [(metric: NSAttributedString, width: CGFloat, priority: Int)] = []
-        
-        // Add latency if enabled (highest priority)
-        if showLatency {
-            let latencyText = NSMutableAttributedString()
-            if currentLatency < 0 {
-                latencyText.append(NSAttributedString(string: "∞ ms ", attributes: warningAttrs))
-            } else if currentLatency > 1000 {
-                latencyText.append(NSAttributedString(
-                    string: String(format: "%3.0fms ", currentLatency),
-                    attributes: highLatencyAttrs
-                ))
-            } else {
-                latencyText.append(NSAttributedString(
-                    string: String(format: "%3.0fms ", currentLatency),
-                    attributes: latencyAttrs
-                ))
-            }
-            let width = measureWidth(of: latencyText)
-            metricsToDisplay.append((latencyText, width, 1)) // Priority 1 (highest)
-        }
-        
-        // Add packet loss if enabled (medium priority)
-        if showPacketLoss {
-            let safeLoss = min(max(currentPacketLoss, 0.0), 100.0)
-            var plAttributes = qualityAttrs
-            if safeLoss > 10.0 {
-                plAttributes = badQualityAttrs
-            } else if safeLoss > 5.0 {
-                plAttributes = warningAttrs
-            }
-            
-            let lossText = NSAttributedString(
-                string: String(format: "L%.1f%% ", safeLoss),
-                attributes: plAttributes
-            )
-            let width = measureWidth(of: lossText)
-            metricsToDisplay.append((lossText, width, 2)) // Priority 2
-        }
-        
-        // Add jitter if enabled (lowest priority)
-        if showJitter {
-            let safeJitter = max(currentJitter, 0.0)
-            var jitterAttributes = qualityAttrs
-            if safeJitter > 50.0 {
-                jitterAttributes = badQualityAttrs
-            } else if safeJitter > 20.0 {
-                jitterAttributes = warningAttrs
-            }
-            
-            let jitterText = NSAttributedString(
-                string: String(format: "J%.1f ", safeJitter),
-                attributes: jitterAttributes
-            )
-            let width = measureWidth(of: jitterText)
-            metricsToDisplay.append((jitterText, width, 3)) // Priority 3 (lowest)
-        }
-        
-        // Sort metrics by priority
-        metricsToDisplay.sort { $0.priority < $1.priority }
-        
-        // Space for ellipsis if needed
-        let ellipsisAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
-        ]
-        let ellipsisText = NSAttributedString(string: "... ", attributes: ellipsisAttrs)
-        let ellipsisWidth = measureWidth(of: ellipsisText)
-        
-        // Add as many metrics as will fit
-        var displayedMetrics: [NSAttributedString] = []
-        var willHideMetrics = false
-        
-        for (metric, width, _) in metricsToDisplay {
-            // Check if we need to reserve space for ellipsis
-            let spaceNeeded = width + (willHideMetrics ? ellipsisWidth : 0)
-            
-            if remainingWidth >= spaceNeeded {
-                // We have space for this metric
-                displayedMetrics.append(metric)
-                remainingWidth -= width
-            } else {
-                // Can't fit this metric
-                willHideMetrics = true
-            }
-        }
-        
-        // Add ellipsis if we're hiding metrics
-        let finalText = NSMutableAttributedString()
-        if (willHideMetrics) {
-            finalText.append(ellipsisText)
-        }
-        
-        // Add all displayed metrics
-        for metric in displayedMetrics {
-            finalText.append(metric)
-        }
-        
-        // Add the speed data
-        finalText.append(speedText)
-        
-        // Now we can assign to text since it's a variable
-        text = finalText
-        button.attributedTitle = text
-        
-        // Update width tracking
-        lastMeasuredWidth = measureWidth(of: text)
-        speedStatusItem.length = lastMeasuredWidth + 8 // Fix: speedStatusItem instead of statusItem
-    }
-    
-    // Setup observers for changes that might affect status bar space
-    private func setupScreenChangeObservers() {
-        // Watch for screen changes
-        screenObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self = self else { return }
-            self.handlePossibleStatusBarSizeChange()
-        }
-        
-        // Start a timer to occasionally check status bar contents
-        statusBarWatcher = Timer.scheduledTimer(
-            withTimeInterval: 5.0, // Check every 5 seconds
-            repeats: true
-        ) { [weak self] _ in
-            guard let self = self else { return }
-            self.detectStatusBarChanges()
-        }
-        
-        // Initial capture of screen state
-        lastScreenWidth = NSScreen.main?.visibleFrame.width ?? 0
-        detectStatusBarChanges()
-        
-        // Also check visibility periodically
-        Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
-            self?.checkStatusItemVisibility()
-        }
-    }
-    
-    // Detect changes in status bar that might affect available space
-    private func detectStatusBarChanges() {
-        // Get the screen width - we can't directly access status items
-        let screenWidth = NSScreen.main?.visibleFrame.width ?? 0
-        
-        // If screen size changed significantly
-        if abs(lastScreenWidth - screenWidth) > 10 {
-            handlePossibleStatusBarSizeChange()
-            
-            // Update our tracking variable
-            lastScreenWidth = screenWidth
-        }
-    }
-    
-    // Handle potential changes in available space
-    private func handlePossibleStatusBarSizeChange() {
-        // When the environment changes, adjust our threshold
-        let screenWidth = NSScreen.main?.visibleFrame.width ?? 0
-        
-        // Use a percentage of screen width as our heuristic
-        // instead of trying to count status items (which we can't access)
-        let estimatedAvailableWidth = min(screenWidth / 6, 300)  // Assume ~6 items in status bar
-        
-        // Update our threshold dynamically
-        let newThreshold = max(estimatedAvailableWidth, 120) // Never go below 120
-        
-        // Log if the threshold changed significantly
-        if abs(widthConstraintThreshold - newThreshold) > 10 {
-            print("Status bar environment changed - adjusted width threshold from \(widthConstraintThreshold) to \(newThreshold)")
-        }
-        
-        // Update our threshold
-        widthConstraintThreshold = newThreshold
-        
-        // Update display with the new width calculation
-        self.updateSpeedOnly()
-    }
-    
-    // Add a method to check for visibility based on menu display
-    private func checkStatusItemVisibility() {
-        // Used to test if our status item is potentially visible
-        let originalLength = speedStatusItem.length  // Fix: speedStatusItem instead of statusItem
-        let testLength = originalLength - 1
-        
-        // Temporarily adjust length - if this would cause the item to
-        // become hidden, the OS might discard the change
-        speedStatusItem.length = testLength  // Fix: speedStatusItem instead of statusItem
-        
-        // Check if length changed successfully (indicating potential visibility)
-        let wasChanged = speedStatusItem.length == testLength  // Fix: speedStatusItem instead of statusItem
-        
-        // Restore original length
-        speedStatusItem.length = originalLength  // Fix: speedStatusItem instead of statusItem
-        
-        // If length doesn't change, it might be hidden already
-        if !wasChanged {
-            print("Status item may be hidden by system")
-            
-            // Make the item more compact to increase chances of visibility
-            widthConstraintThreshold = 120 // Very compact mode
-            updateSpeedOnly()
-            
-            // Schedule a check to see if we can restore normal size
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-                self?.checkForRestoreNormalSize()
-            }
-        }
-    }
-    
-    private func checkForRestoreNormalSize() {
-        // Try to restore to normal size if screen size allows
-        let screenWidth = NSScreen.main?.visibleFrame.width ?? 0
-        let estimatedAvailableWidth = min(screenWidth / 6, 300)
-        
-        // Carefully restore size if reasonable
-        if estimatedAvailableWidth > 150 {
-            widthConstraintThreshold = estimatedAvailableWidth
-            updateSpeedOnly()
-        }
-    }
-    
-    private func setupStatusBarItems() {
-        // Create the main speed display item (highest priority, always visible if possible)
-        speedStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
-        if let button = speedStatusItem.button {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            ]
-            let boldAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
-            ]
-            
-            let initialText = NSMutableAttributedString()
-            initialText.append(NSAttributedString(string: "0.0", attributes: attrs))
-            initialText.append(NSAttributedString(string: "↓", attributes: boldAttrs))
-            initialText.append(NSAttributedString(string: "0.0", attributes: attrs))
-            initialText.append(NSAttributedString(string: "↑", attributes: boldAttrs))
-            
-            button.attributedTitle = initialText
-        }
-        
-        // Create individual menus for each status item
-        let bandwidthMenu = createMenu(for: .bandwidth)
-        let latencyMenu = createMenu(for: .latency)
-        let qualityMenu = createMenu(for: .quality)
-        
-        // Assign menus to status items
-        speedStatusItem.menu = bandwidthMenu
-        
-        // Create separate item for latency if enabled
-        if showLatency {
-            createLatencyStatusItem(withMenu: latencyMenu)
-        }
-        
-        // Create separate item for network quality if enabled
-        if showPacketLoss || showJitter {
-            createQualityStatusItem(withMenu: qualityMenu)
-        }
-        
-        // Create traffic status item to display total traffic used
-        if let menu = speedStatusItem.menu, showTotalTraffic {
-            createTrafficStatusItem(withMenu: menu)  // NEW: Only create if enabled
-        }
-    }
-    
-    private func createLatencyStatusItem(withMenu menu: NSMenu) {
-        latencyStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
-        if let button = latencyStatusItem?.button {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            ]
-            
-            button.attributedTitle = NSAttributedString(string: "∞ ms", attributes: attrs)
-            
-            
-            // Directly assign the menu
-            latencyStatusItem?.menu = menu
-        }
-    }
-    
-    private func createQualityStatusItem(withMenu menu: NSMenu) {
-        qualityStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
-        if let button = qualityStatusItem?.button {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            ]
-            
-            let text = showPacketLoss && showJitter ? "L0.0% J0.0" : 
-                      showPacketLoss ? "L0.0%" : "J0.0"
-            
-            button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
-            
-            // No need for action method anymore
-            // button.action = #selector(statusItemClicked(_:))
-            // button.target = self
-            
-            // Directly assign the menu
-            qualityStatusItem?.menu = menu
-        }
-    }
-    
-    // New helper to create the traffic status item
-    private func createTrafficStatusItem(withMenu menu: NSMenu) {
-        trafficStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = trafficStatusItem?.button {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            ]
-            let text = String(format: "%.2fGB", totalTrafficGB)
-            button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
-        }
-        // Removed menu assignment to avoid interference:
-        // trafficStatusItem?.menu = menu
-        // Set a fixed length to ensure the traffic status item is visible
-        // trafficStatusItem?.length = 130
-    }
-    
-    // New helper to update the traffic display
-    private func updateTrafficDisplay() {
-        guard let button = trafficStatusItem?.button else { return }
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        ]
-        let text = String(format: "%.2fGB", totalTrafficGB)
-        button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
-    }
-    
-    // Create individual menus for each status item type
-    private func createMenu(for type: StatusItemType) -> NSMenu {
-        let menu = NSMenu()
-        
-        // Set delegate and tag to identify menu type
-        menu.delegate = self
-        menu.autoenablesItems = true
-        
-        // Store the type in our dictionary instead of using representedObject
-        menuTypeMap[menu] = type
-        
-        // Create menu items based on status item type
-        let modeGroup = NSMenu()
-        let modeItem = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
-        modeItem.submenu = modeGroup
-        
-        let liveMenuItem = NSMenuItem(title: "Live Bandwidth", action: #selector(setLiveMode), keyEquivalent: "l")
-        let maxMenuItem = NSMenuItem(title: "Max Bandwidth", action: #selector(setMaxMode), keyEquivalent: "m")
-        let resetMaxMenuItem = NSMenuItem(title: "Reset Max", action: #selector(resetMaxSpeed), keyEquivalent: "r")
-        modeGroup.addItem(liveMenuItem)
-        modeGroup.addItem(maxMenuItem)
-        modeGroup.addItem(resetMaxMenuItem)
-        
-        // Add Latency toggle option
-        modeGroup.addItem(NSMenuItem.separator())
-        let latencyMenuItem = NSMenuItem(title: "Show Latency", action: #selector(toggleLatency), keyEquivalent: "p")
-        latencyMenuItem.state = showLatency ? .on : .off
-        modeGroup.addItem(latencyMenuItem)
-        
-        let packetLossMenuItem = NSMenuItem(title: "Show Packet Loss", action: #selector(togglePacketLoss), keyEquivalent: "k")
-        packetLossMenuItem.state = showPacketLoss ? .on : .off
-        modeGroup.addItem(packetLossMenuItem)
-        
-        let jitterMenuItem = NSMenuItem(title: "Show Jitter", action: #selector(toggleJitter), keyEquivalent: "j")
-        jitterMenuItem.state = showJitter ? .on : .off
-        modeGroup.addItem(jitterMenuItem)
-        
-        // NEW: Add "Show Total Traffic" toggle with key equivalent "g"
-        modeGroup.addItem(NSMenuItem.separator())
-        let trafficMenuItem = NSMenuItem(title: "Show Total Traffic", action: #selector(toggleTraffic), keyEquivalent: "g")
-        trafficMenuItem.state = showTotalTraffic ? .on : .off
-        modeGroup.addItem(trafficMenuItem)
-        
-        menu.addItem(modeItem)
-        menu.addItem(NSMenuItem.separator())
-        
-        // Speed Test group
-        let speedTestMenu = NSMenu()
-        let speedTestItem = NSMenuItem(title: "Speed Test", action: nil, keyEquivalent: "")
-        speedTestItem.submenu = speedTestMenu
-        
-        // Quick test at the top
-        speedTestMenu.addItem(NSMenuItem(title: "Quick Test", action: #selector(startQuickTest), keyEquivalent: "t"))
-        speedTestMenu.addItem(NSMenuItem.separator())
-        
-        // Download tests
-        let downloadMenu = NSMenu()
-        let downloadItem = NSMenuItem(title: "Download Test", action: nil, keyEquivalent: "")
-        downloadItem.submenu = downloadMenu
-        downloadMenu.addItem(NSMenuItem(title: "Test (10 MB)", action: #selector(startDownloadTest_small), keyEquivalent: "1"))
-        downloadMenu.addItem(NSMenuItem(title: "Test (100 MB)", action: #selector(startDownloadTest_medium), keyEquivalent: "2"))
-        downloadMenu.addItem(NSMenuItem(title: "Test (1 GB)", action: #selector(startDownloadTest_large), keyEquivalent: "3"))
-        
-        // Upload tests
-        let uploadMenu = NSMenu()
-        let uploadItem = NSMenuItem(title: "Upload Test", action: nil, keyEquivalent: "")
-        uploadItem.submenu = uploadMenu
-        uploadMenu.addItem(NSMenuItem(title: "Test (10 MB)", action: #selector(startUploadTest_small), keyEquivalent: "4"))
-        uploadMenu.addItem(NSMenuItem(title: "Test (100 MB)", action: #selector(startUploadTest_medium), keyEquivalent: "5"))
-        uploadMenu.addItem(NSMenuItem(title: "Test (1 GB)", action: #selector(startUploadTest_large), keyEquivalent: "6"))
-        
-        speedTestMenu.addItem(downloadItem)
-        speedTestMenu.addItem(uploadItem)
-        speedTestMenu.addItem(NSMenuItem.separator())
-        
-        // Combined tests
-        let combinedMenu = NSMenu()
-        let combinedItem = NSMenuItem(title: "Combined Test", action: nil, keyEquivalent: "")
-        combinedItem.submenu = combinedMenu
-        
-        combinedMenu.addItem(NSMenuItem(title: "Serial Test (10 MB)", action: #selector(startCombinedSerialTest_small), keyEquivalent: "7"))
-        combinedMenu.addItem(NSMenuItem(title: "Serial Test (100 MB)", action: #selector(startCombinedSerialTest_medium), keyEquivalent: "8"))
-        combinedMenu.addItem(NSMenuItem(title: "Serial Test (1 GB)", action: #selector(startCombinedSerialTest_large), keyEquivalent: "9"))
-        combinedMenu.addItem(NSMenuItem.separator())
-        combinedMenu.addItem(NSMenuItem(title: "Parallel Test (10 MB)", action: #selector(startCombinedParallelTest_small), keyEquivalent: ""))
-        combinedMenu.addItem(NSMenuItem(title: "Parallel Test (100 MB)", action: #selector(startCombinedParallelTest_medium), keyEquivalent: ""))
-        combinedMenu.addItem(NSMenuItem(title: "Parallel Test (1 GB)", action: #selector(startCombinedParallelTest_large), keyEquivalent: ""))
-        
-        speedTestMenu.addItem(combinedItem)
-        
-        menu.addItem(speedTestItem)
-        menu.addItem(NSMenuItem.separator())
-        
-        // Cancel test item (hidden by default)
-        let cancelTestMenuItem = NSMenuItem(title: "Cancel Test", action: #selector(cancelCurrentTest), keyEquivalent: "c")
-        cancelTestMenuItem.isHidden = true
-        menu.addItem(cancelTestMenuItem)
-        
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        
-        return menu
+        // Show/hide cancel test
+        let cancelItem = menu.items.first { $0.keyEquivalent == "c" }
+        cancelItem?.isHidden = !isTestingSpeed
     }
     
     private func updateSpeedDisplay(currentDown: Double, currentUp: Double, maxDown: Double, maxUp: Double) {
@@ -1594,176 +842,211 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         button.attributedTitle = speedText
     }
     
-    private func updateLatencyDisplay() {
-        // If latency is disabled or network is disconnected, remove the item
-        if !showLatency || !isNetworkConnected {
-            removeLatencyStatusItem()
-            return
-        }
+    // MARK: - Mode Control Actions
+    
+    @objc private func setLiveMode() {
+        showMaxSpeed = false
+        maxModeStartTime = nil // Clear the max mode start time
+        updateMenuState()
+        updateSpeedOnly()
+        savePreferences() // Save the new preference
+    }
+    
+    @objc private func setMaxMode() {
+        showMaxSpeed = true
+        maxModeStartTime = Date() // Set the max mode start time
+        updateMenuState()
+        updateSpeedOnly()
+        savePreferences() // Save the new preference
+    }
+    
+    @objc private func resetMaxSpeed() {
+        speedMonitor.resetMaxSpeeds()
+        updateSpeedOnly()
+    }
+    
+    // MARK: - Display Toggle Actions
+    
+    @objc private func toggleLatency() {
+        showLatency.toggle()
         
-        // Create item if needed
-        if latencyStatusItem == nil {
-            createLatencyStatusItem(withMenu: speedStatusItem.menu!)
-        }
+        // Update the menu item state in all menus
+        updateMenuItemState(keyEquivalent: "p", state: showLatency ? .on : .off)
         
-        // Exit if we don't have a valid button (after potential creation)
-        guard let button = latencyStatusItem?.button else { return }
-        
-        // Set appropriate attributes based on latency value
-        var attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        ]
-        
-        let latencyText: String
-        
-        if currentLatency < 0 {
-            latencyText = "∞ ms"
-            attrs[.foregroundColor] = NSColor.yellow
-        } else if currentLatency > 1000 {
-            latencyText = String(format: "%3.0fms", currentLatency)
-            attrs[.foregroundColor] = NSColor.yellow
-            attrs[.font] = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
+        // Create or remove the latency status item
+        if showLatency {
+            if latencyStatusItem == nil {
+                latencyStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+                updateLatencyDisplay()
+            }
         } else {
-            latencyText = String(format: "%3.0fms", currentLatency)
-        }
-        
-        button.attributedTitle = NSAttributedString(string: latencyText, attributes: attrs)
-    }
-    
-    private func updateQualityDisplay() {
-        // Only update if quality metrics are enabled
-        if !showPacketLoss && !showJitter || !isNetworkConnected {
-            removeQualityStatusItem()
-            return
-        }
-        
-        // Create item if needed
-        if qualityStatusItem == nil {
-            createQualityStatusItem(withMenu: speedStatusItem.menu!)
-        }
-        
-        guard let button = qualityStatusItem?.button else { return }
-        
-        let qualityText = NSMutableAttributedString()
-        
-        // Add packet loss if enabled
-        if showPacketLoss {
-            let safeLoss = min(max(currentPacketLoss, 0.0), 100.0)
-            var attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            ]
-            
-            if safeLoss > 10.0 {
-                attrs[.foregroundColor] = NSColor.yellow
-            } else if safeLoss > 5.0 {
-                attrs[.foregroundColor] = NSColor.yellow
-            }
-            
-            qualityText.append(NSAttributedString(
-                string: String(format: "L%.1f%%", safeLoss),
-                attributes: attrs
-            ))
-            
-            // Add separator if we'll also show jitter
-            if showJitter {
-                qualityText.append(NSAttributedString(string: " ", attributes: attrs))
+            if let item = latencyStatusItem {
+                NSStatusBar.system.removeStatusItem(item)
+                latencyStatusItem = nil
             }
         }
         
-        // Add jitter if enabled
-        if showJitter {
-            let safeJitter = max(currentJitter, 0.0)
-            var attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            ]
-            
-            if safeJitter > 50.0 {
-                attrs[.foregroundColor] = NSColor.yellow
-            } else if safeJitter > 20.0 {
-                attrs[.foregroundColor] = NSColor.yellow
+        updateSpeedOnly()
+        savePreferences() // Save the new preference
+    }
+    
+    @objc private func togglePacketLoss() {
+        showPacketLoss.toggle()
+        
+        // Update the menu item state
+        updateMenuItemState(keyEquivalent: "k", state: showPacketLoss ? .on : .off)
+        
+        // Create or remove the quality status item as needed
+        updateQualityStatusItem()
+        
+        // Update the display immediately
+        updateSpeedOnly()
+        savePreferences() // Save the new preference
+    }
+    
+    @objc private func toggleJitter() {
+        showJitter.toggle()
+        
+        // Update the menu item state
+        updateMenuItemState(keyEquivalent: "j", state: showJitter ? .on : .off)
+        
+        // Create or remove the quality status item as needed
+        updateQualityStatusItem()
+        
+        // Update the display immediately
+        updateSpeedOnly()
+        savePreferences() // Save the new preference
+    }
+    
+    @objc private func toggleTraffic() {
+        showTotalTraffic.toggle()
+        updateMenuItemState(keyEquivalent: "g", state: showTotalTraffic ? .on : .off)
+        
+        if showTotalTraffic {
+            if trafficStatusItem == nil {
+                setupTrafficStatusItem()
             }
-            
-            qualityText.append(NSAttributedString(
-                string: String(format: "J%.1f", safeJitter),
-                attributes: attrs
-            ))
+        } else {
+            if let item = trafficStatusItem {
+                NSStatusBar.system.removeStatusItem(item)
+                trafficStatusItem = nil
+            }
         }
         
-        button.attributedTitle = qualityText
+        updateSpeedOnly()
+        savePreferences()
     }
     
-    private func removeLatencyStatusItem() {
-        if let item = latencyStatusItem {
-            NSStatusBar.system.removeStatusItem(item)
-            latencyStatusItem = nil
-        }
+    private func setupTrafficStatusItem() {
+        trafficStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        updateTrafficDisplay()
     }
     
-    private func removeQualityStatusItem() {
-        if let item = qualityStatusItem {
-            NSStatusBar.system.removeStatusItem(item)
-            qualityStatusItem = nil
-        }
-    }
-    
-    // Helper method to update menu item states in all menus
     private func updateMenuItemState(keyEquivalent: String, state: NSControl.StateValue) {
-        // Update the state in all three menus
-        [speedStatusItem.menu, latencyStatusItem?.menu, qualityStatusItem?.menu].forEach { menu in
-            if let modeMenu = menu?.items.first(where: { $0.title == "Mode" })?.submenu,
-               let item = modeMenu.items.first(where: { $0.keyEquivalent == keyEquivalent }) {
-                item.state = state
+        // Update the state in all menus
+        if let menu = speedStatusItem.menu,
+           let modeMenu = menu.items.first(where: { $0.title == "Mode" })?.submenu,
+           let item = modeMenu.items.first(where: { $0.keyEquivalent == keyEquivalent }) {
+            item.state = state
+        }
+    }
+    
+    // Helper method to update quality status item
+    private func updateQualityStatusItem() {
+        if showPacketLoss || showJitter {
+            if qualityStatusItem == nil {
+                qualityStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+                updateQualityDisplay()
+            } else {
+                updateQualityDisplay()
+            }
+        } else {
+            if let item = qualityStatusItem {
+                NSStatusBar.system.removeStatusItem(item)
+                qualityStatusItem = nil
             }
         }
     }
-}
     
-// MARK: - NSMenuDelegate methods
-
-// Conform to NSMenuDelegate to customize menu before it opens
-extension AppDelegate: NSMenuDelegate {
-    func menuWillOpen(_ menu: NSMenu) {
-        // Remove any previous header
-        if let firstItem = menu.items.first, firstItem.isSeparatorItem == false && firstItem.isEnabled == false {
-            menu.removeItem(at: 0)
+    // MARK: - Speed Test Actions
+    
+    @objc private func startQuickTest() {
+        startSpeedTest(size: .medium, type: .combinedSerial)
+    }
+    
+    @objc private func startDownloadTest_small() { startSpeedTest(size: .small, type: .download) }
+    @objc private func startDownloadTest_medium() { startSpeedTest(size: .medium, type: .download) }
+    @objc private func startDownloadTest_large() { startSpeedTest(size: .large, type: .download) }
+    
+    @objc private func startUploadTest_small() { startSpeedTest(size: .small, type: .upload) }
+    @objc private func startUploadTest_medium() { startSpeedTest(size: .medium, type: .upload) }
+    @objc private func startUploadTest_large() { startSpeedTest(size: .large, type: .upload) }
+    
+    @objc private func startCombinedSerialTest_small() { startSpeedTest(size: .small, type: .combinedSerial) }
+    @objc private func startCombinedSerialTest_medium() { startSpeedTest(size: .medium, type: .combinedSerial) }
+    @objc private func startCombinedSerialTest_large() { startSpeedTest(size: .large, type: .combinedSerial) }
+    
+    @objc private func startCombinedParallelTest_small() { startSpeedTest(size: .small, type: .combinedParallel) }
+    @objc private func startCombinedParallelTest_medium() { startSpeedTest(size: .medium, type: .combinedParallel) }
+    @objc private func startCombinedParallelTest_large() { startSpeedTest(size: .large, type: .combinedParallel) }
+    
+    private func startSpeedTest(size: SpeedTest.TestSize, type: SpeedTest.TestType) {
+        guard !isTestingSpeed else { return }
+        
+        isTestingSpeed = true
+        showMaxSpeed = true
+        maxModeStartTime = Date() // Set the max mode start time when starting a test
+        
+        updateMenuState()
+        
+        if let button = speedStatusItem.button {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            ]
+            let text = "Testing speed..."
+            button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
         }
         
-        // Determine which item was clicked based on our menuTypeMap
-        let itemType = menuTypeMap[menu] ?? .bandwidth
-        
-        var headerTitle: String
-        
-        switch itemType {
-        case .bandwidth:
-            headerTitle = showMaxSpeed ? "Max Bandwidth" : "Bandwidth"
-        case .latency:
-            headerTitle = "Latency (Ping Time)"
-        case .quality:
-            if showPacketLoss && showJitter {
-                headerTitle = "Network Quality"
-            } else if showPacketLoss {
-                headerTitle = "Packet Loss"
-            } else {
-                headerTitle = "Jitter"
+        speedTest.startTest(size: size, type: type) { progress in
+            // Update progress if needed
+        } completion: { [weak self] result in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                self.isTestingSpeed = false
+                self.cancelTest = nil
+                self.updateMenuState()
+                self.updateSpeedOnly()
+                
+                // Reset the max mode start time - begins the 1-minute countdown
+                self.maxModeStartTime = Date()
+                
+                // Show result based on test type
+                switch type {
+                case .download, .upload:
+                    if let speed = result.download ?? result.upload {
+                        print("Test completed: \(speed) Mbps")
+                    } else {
+                        print("Test failed")
+                    }
+                case .combinedSerial, .combinedParallel:
+                    print("Download: \(result.download ?? -1) Mbps")
+                    print("Upload: \(result.upload ?? -1) Mbps")
+                }
             }
         }
         
-        // Add the header as a disabled menu item
-        let headerItem = NSMenuItem(title: headerTitle, action: nil, keyEquivalent: "")
-        headerItem.isEnabled = false
-        
-        // Apply custom attributes to make it stand out
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize),
-            .foregroundColor: NSColor.gray
-        ]
-        headerItem.attributedTitle = NSAttributedString(string: headerTitle, attributes: attributes)
-        
-        // Insert at the beginning of the menu
-        menu.insertItem(headerItem, at: 0)
-        
-        // Add a separator after the header
-        menu.insertItem(NSMenuItem.separator(), at: 1)
+        // Store cancel handler
+        cancelTest = { [weak self] in
+            self?.speedTest.cancelCurrentTest()
+            self?.isTestingSpeed = false
+            self?.updateMenuState()
+            self?.updateSpeedOnly()
+        }
+    }
+    
+    @objc private func cancelCurrentTest() {
+        cancelTest?()
     }
 }
 
